@@ -33,7 +33,7 @@
 - **便捷** — 3 种主题（霓虹、雾夜、经典）、3 种语言（中文、英文、俄文）、自选浏览器（含应用模式）、最小化到托盘、防止重复启动。
 
 <p align="center">
-  <img src="docs/screenshots/workflows.png" width="49%" alt="工作流">
+  <img src="docs/screenshots/transfer.png" width="49%" alt="迁移">
   <img src="docs/screenshots/models.png" width="49%" alt="模型下载">
 </p>
 

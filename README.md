@@ -33,7 +33,7 @@ No more `.bat` files and launch flags to remember. ND Launcher starts ComfyUI wi
 - **Comfort** — 3 themes (Neon, Foggy Night, Classic), 3 languages (English, Russian, Chinese), your browser of choice (or app mode), minimize to tray, single instance.
 
 <p align="center">
-  <img src="docs/screenshots/workflows.png" width="49%" alt="Workflows">
+  <img src="docs/screenshots/transfer.png" width="49%" alt="Transfer">
   <img src="docs/screenshots/models.png" width="49%" alt="Model downloads">
 </p>
 

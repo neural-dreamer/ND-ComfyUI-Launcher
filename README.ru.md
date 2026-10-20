@@ -33,7 +33,7 @@
 - **Удобство** — 3 темы («Неон», «Туманная ночь», «Классик»), 3 языка (русский, английский, китайский), выбор браузера (в том числе режим отдельного приложения), сворачивание в трей, защита от повторного запуска.
 
 <p align="center">
-  <img src="docs/screenshots/workflows.png" width="49%" alt="Воркфлоу">
+  <img src="docs/screenshots/transfer.png" width="49%" alt="Перенос">
   <img src="docs/screenshots/models.png" width="49%" alt="Загрузка моделей">
 </p>
 
