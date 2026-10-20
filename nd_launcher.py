@@ -102,7 +102,7 @@ def install_qt_translator(code):
 
 
 APP_TITLE = "ND · ComfyUI Launcher"
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 DEFAULT_PORT = 8188
 BRAND_NAME = "Neural Dreamer"
 REPO_URL = "https://github.com/neural-dreamer/ND-ComfyUI-Launcher"
@@ -656,7 +656,14 @@ def parse_extra_model_paths(text, yaml_dir):
 
 # Запуск hf CLI внутри python_embeded — работает и со старым huggingface-cli, и с новым hf.
 HF_CLI_SHIM = r"""
-import sys
+import sys, types
+# python_embeded has no venv module, but recent huggingface_hub imports it on every hf run
+# (only needed to install CLI extensions). An empty stub is enough for downloads.
+for _name in ("venv", "ensurepip"):
+    try:
+        __import__(_name)
+    except ImportError:
+        sys.modules[_name] = types.ModuleType(_name)
 try:
     from huggingface_hub.cli.hf import main
 except ImportError:

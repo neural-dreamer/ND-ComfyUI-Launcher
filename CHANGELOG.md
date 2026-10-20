@@ -3,6 +3,11 @@
 All notable changes to ND · ComfyUI Launcher. Versions follow [Semantic Versioning](https://semver.org).
 Each version's section is used as the notes of its GitHub release.
 
+## [1.1.1] — 2026-10-20
+
+### Fixed
+- Hugging Face downloads failed with `ModuleNotFoundError: No module named 'venv'` on builds with a recent `huggingface_hub`: its CLI imports `venv`, which the portable `python_embeded` does not include.
+
 ## [1.1.0] — 2026-10-20
 
 First public release.
