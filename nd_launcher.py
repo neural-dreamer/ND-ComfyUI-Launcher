@@ -2545,6 +2545,7 @@ class MainWindow(QMainWindow):
         split.addWidget(self.tree_wf)
 
         right, rl = panel()
+        self.wf_desc_panel = right
         rl.setContentsMargins(20, 16, 20, 16)
         self.wf_view = QTextBrowser()
         self.wf_view.setObjectName("WfView")
@@ -4637,11 +4638,16 @@ class MainWindow(QMainWindow):
                 if self.ndesc.loaded:
                     it.setForeground(0, QColor(C["MUTED"]))
             parent.addChild(it)
-        if self.ndesc.loaded:
+        has_desc = self.ndesc.loaded and bool(self.ndesc.by_path)
+        if has_desc:
             names = ", ".join(f.name for f in self.ndesc.files)
             self.lbl_wf.setText(tr('Воркфлоу: {0} · с описанием: {1} · файлы описаний: {2}', len(files), described, names))
+        elif self.ndesc.loaded or self.ndesc.errors:
+            self.lbl_wf.setText(tr("Воркфлоу: {0} · файл описаний пустой или повреждён — панель описаний скрыта", len(files)))
         else:
             self.lbl_wf.setText(tr('Воркфлоу: {0} · файл описаний в utils\\*.ndesc не найден', len(files)))
+        # нет корректных описаний — показываем только список воркфлоу
+        self.wf_desc_panel.setVisible(has_desc)
         self.filter_workflows(self.edit_wf_search.text())
         self.show_workflow(None)
 
@@ -4755,18 +4761,6 @@ class MainWindow(QMainWindow):
                 link = tr(' &nbsp;<a href="{0}">скачать</a>', esc(str(m["url"]))) if m.get("url") else ""
                 out.append(f'<tr><td>{mark}</td><td><b>{esc(name)}</b> <span style="color:{muted_c};">'
                            f'{" · ".join(extra)}</span>{link}</td></tr>')
-            out.append("</table>")
-        nodes = as_list(e.get("custom_nodes"))
-        if nodes:
-            have = self._current_node_names()
-            out.append(tr('<h3 style="color:{0};">Кастом-ноды</h3><table cellspacing="0" cellpadding="3">', cyan))
-            for n in nodes:
-                n = n if isinstance(n, dict) else {"name": str(n)}
-                name = str(n.get("name", ""))
-                ok = name.lower() in have
-                mark = f'<span style="color:{green if ok else red};">{"✓" if ok else "✗"}</span>'
-                link = tr(' &nbsp;<a href="{0}">репозиторий</a>', esc(str(n["url"]))) if n.get("url") else ""
-                out.append(f"<tr><td>{mark}</td><td>{esc(name)}{link}</td></tr>")
             out.append("</table>")
         req = []
         if e.get("vram"):

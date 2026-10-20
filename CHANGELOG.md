@@ -17,10 +17,13 @@ First public release.
 - License notice and repository link in Settings → About.
 - Launch flags `--enable-manager`, `--enable-manager-legacy-ui` and `--max-upload-size 999` are now checkboxes on the Launch tab (on by default; previously always added).
 - `example.png` replacement can be turned off or use your own image (Settings).
+- `ndesc-writer` skill (`skills/ndesc-writer/SKILL.md`) for generating workflow descriptions with Claude, ChatGPT and other LLMs.
 
 ### Changed
 - Folder pickers open downwards, start at “Other folder…” and ignore the mouse wheel when closed.
 - Table headers follow the rounded panel corners.
+- Workflow descriptions no longer list custom nodes (`custom_nodes` is ignored).
+- The description panel on the Workflows tab is hidden when there is no valid `.ndesc` file.
 
 ## [1.0.1]
 

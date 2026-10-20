@@ -6,6 +6,7 @@
 
 TRANSLATIONS = {
     "en": {
+        'Воркфлоу: {0} · файл описаний пустой или повреждён — панель описаний скрыта': 'Workflows: {0} · description file is empty or invalid — description panel hidden',
         'ComfyUI-Manager  (--enable-manager)': 'ComfyUI-Manager  (--enable-manager)',
         'Включает встроенный ComfyUI-Manager. Нужен свежий ComfyUI с pip-версией Manager — в старых сборках с этим флагом ComfyUI может не запуститься.': 'Enables the built-in ComfyUI-Manager. Requires a recent ComfyUI with the pip version of Manager — older builds may fail to start with this flag.',
         'Классический интерфейс Manager  (--enable-manager-legacy-ui)': 'Classic Manager interface  (--enable-manager-legacy-ui)',
@@ -475,6 +476,7 @@ TRANSLATIONS = {
         'Ссылки зашиты в эту сборку и не редактируются.': 'Links are built into this build and can’t be edited.',
     },
     "zh": {
+        'Воркфлоу: {0} · файл описаний пустой или повреждён — панель описаний скрыта': '工作流：{0} · 描述文件为空或已损坏 — 已隐藏描述面板',
         'ComfyUI-Manager  (--enable-manager)': 'ComfyUI-Manager  (--enable-manager)',
         'Включает встроенный ComfyUI-Manager. Нужен свежий ComfyUI с pip-версией Manager — в старых сборках с этим флагом ComfyUI может не запуститься.': '启用内置的 ComfyUI-Manager。需要较新的 ComfyUI 及 pip 版 Manager — 旧版整合包使用此参数可能无法启动。',
         'Классический интерфейс Manager  (--enable-manager-legacy-ui)': '经典 Manager 界面  (--enable-manager-legacy-ui)',

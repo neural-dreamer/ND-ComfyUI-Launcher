@@ -60,7 +60,7 @@ No more `.bat` files and launch flags to remember. ND Launcher starts ComfyUI wi
 - **API tokens** are encrypted with Windows DPAPI: only your Windows user on this PC can decrypt them.
 - **Network access.** The launcher sends no telemetry. It goes online only for features you use: downloads, node installs and updates.
 - **Example image.** After every ComfyUI update, the launcher replaces `ComfyUI/input/example.png` with the Neural Dreamer logo. In Settings you can choose your own image or turn this off.
-- **Workflow descriptions** live in `utils/*.ndesc` (plain JSON). See the [format spec](docs/NDESC_FORMAT.md) (in Russian) and the [example](utils/workflows.ndesc.example).
+- **Workflow descriptions** live in `utils/*.ndesc` (plain JSON). If there are none, the Workflows tab shows just the list. To generate them with an AI model (Claude, ChatGPT and others), use the [ndesc-writer skill](skills/ndesc-writer/SKILL.md). See also the [format spec](docs/NDESC_FORMAT.md) (in Russian) and the [example](utils/workflows.ndesc.example).
 
 ## Running from source & building
 

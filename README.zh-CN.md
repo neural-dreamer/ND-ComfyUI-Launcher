@@ -60,7 +60,7 @@
 - **API 令牌**使用 Windows DPAPI 加密，只有本机上你的 Windows 用户才能解密。
 - **网络访问。** 启动器不发送任何遥测数据，只在你使用相应功能时联网：下载、安装和更新节点。
 - **示例图片。** 每次更新 ComfyUI 后，启动器会把 `ComfyUI/input/example.png` 替换为 Neural Dreamer 徽标。可在“设置”中选择自己的图片或关闭此功能。
-- **工作流描述**存放在 `utils/*.ndesc`（纯 JSON）。参见[格式说明](docs/NDESC_FORMAT.md)（俄文）和[示例](utils/workflows.ndesc.example)。
+- **工作流描述**存放在 `utils/*.ndesc`（纯 JSON）。如果没有描述，“工作流”选项卡只显示列表。可使用 [ndesc-writer 技能](skills/ndesc-writer/SKILL.md)让 AI 模型（Claude、ChatGPT 等）生成描述。另见[格式说明](docs/NDESC_FORMAT.md)（俄文）和[示例](utils/workflows.ndesc.example)。
 
 ## 从源码运行与构建
 
