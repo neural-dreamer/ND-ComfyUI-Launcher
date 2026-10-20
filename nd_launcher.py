@@ -38,7 +38,7 @@ from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath, QLinearGradien
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
-    QPushButton, QComboBox, QDialog, QCheckBox, QSpinBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit, QTextBrowser,
+    QPushButton, QComboBox, QDialog, QCheckBox, QSpinBox, QLineEdit, QPlainTextEdit, QTextBrowser,
     QStackedWidget, QSplitter, QFileDialog, QMessageBox, QProgressBar, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QInputDialog, QGraphicsDropShadowEffect, QScrollArea, QButtonGroup, QTableWidget,
     QTableWidgetItem, QAbstractItemView, QSizePolicy, QSystemTrayIcon, QMenu,
@@ -962,6 +962,8 @@ FOLDERS = [
     ("Воркфлоу", "ComfyUI/user/default/workflows"),
     ("Описания (utils)", "utils"),
 ]
+
+RESERVE_VRAM_STEPS = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
 
 PAGES = [  # ключ, подпись, иконка, обернуть в прокрутку
     ("launch", "Запуск", "launch", True),
@@ -2310,7 +2312,7 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
         self.nav_buttons = {}
         for key, title, icon, _ in PAGES:
-            b = QPushButton("  " + tr(title))
+            b = QPushButton("  " + tr(title).replace("&", "&&"))
             b.setObjectName("Nav")
             b.setCheckable(True)
             b.setIcon(nav_icon(icon))
@@ -2404,16 +2406,14 @@ class MainWindow(QMainWindow):
         self.cb_vram = self._combo(VRAM_MODES, tr('Как ComfyUI распоряжается видеопамятью.\nLow VRAM — если не хватает памяти и ловишь OOM.'))
         self.cb_attn = self._combo(ATTENTION_MODES, tr('Механизм внимания.\nSageAttention быстрее, но должен быть установлен в python_embeded.'))
         self.cb_preview = self._combo(PREVIEW_MODES, tr('Превью картинки в процессе генерации в KSampler.'))
-        self.spin_reserve = QDoubleSpinBox()
-        self.spin_reserve.setRange(0, 16)
-        self.spin_reserve.setSingleStep(0.5)
-        self.spin_reserve.setDecimals(1)
-        self.spin_reserve.setSuffix(tr(' ГБ'))
-        self.spin_reserve.setSpecialValueText(tr('выкл'))
-        self.spin_reserve.setToolTip(tr('Сколько VRAM оставить свободной для системы и других программ (--reserve-vram).'))
-        self.spin_reserve.valueChanged.connect(self._on_option_changed)
+        self.cb_reserve = QComboBox()
+        for v in RESERVE_VRAM_STEPS:
+            self.cb_reserve.addItem(self._reserve_text(v), v)
+        self.cb_reserve.setToolTip(tr('Сколько VRAM оставить свободной для системы и других программ (--reserve-vram).'))
+        self._compact_combo(self.cb_reserve)
+        self.cb_reserve.currentIndexChanged.connect(self._on_option_changed)
         for r, (lbl, w) in enumerate([(tr('Видеопамять'), self.cb_vram), ("Attention", self.cb_attn),
-                                      (tr('Превью'), self.cb_preview), (tr('Резерв VRAM'), self.spin_reserve)]):
+                                      (tr('Превью'), self.cb_preview), (tr('Резерв VRAM'), self.cb_reserve)]):
             g.addWidget(muted(lbl, False), r, 0)
             g.addWidget(w, r, 1)
         g.setColumnStretch(1, 1)
@@ -3401,7 +3401,7 @@ class MainWindow(QMainWindow):
         wp.setMinimumWidth(300)
         wp.setMaximumWidth(400)
         wp.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        self.chk_t_settings = QCheckBox(tr('Настройки и Manager (папка user)'))
+        self.chk_t_settings = QCheckBox(tr('Настройки и Manager (папка user)').replace("&", "&&"))
         self.chk_t_settings.setToolTip(tr('Всё из ComfyUI/user, кроме воркфлоу: настройки интерфейса, горячие клавиши, конфиг Manager.'))
         self.chk_t_workflows = QCheckBox(tr('Воркфлоу пользователя'))
         self.chk_t_workflows.setToolTip("ComfyUI/user/default/workflows")
@@ -3629,6 +3629,22 @@ class MainWindow(QMainWindow):
         return page
 
     # ── helpers ──
+    @staticmethod
+    def _reserve_text(v):
+        return tr('выкл') if not v else f"{v:g}" + tr(' ГБ')
+
+    def _set_reserve(self, v):
+        try:
+            v = round(max(0.0, float(v or 0)), 1)
+        except (TypeError, ValueError):
+            v = 0.0
+        i = self.cb_reserve.findData(v)
+        if i < 0:  # значение из старого конфига, которого нет в списке
+            pos = sum(1 for x in RESERVE_VRAM_STEPS if x < v)
+            self.cb_reserve.insertItem(pos, self._reserve_text(v), v)
+            i = pos
+        self.cb_reserve.setCurrentIndex(i)
+
     def _combo(self, items, tip):
         cb = QComboBox()
         for text, data in items:
@@ -3680,7 +3696,7 @@ class MainWindow(QMainWindow):
         return dict(vram=self.cb_vram.currentData(), attention=self.cb_attn.currentData(),
                     preview=self.cb_preview.currentData(), fast=self.chk_fast.isChecked(),
                     fp8_unet=self.chk_fp8.isChecked(), fp16_vae=self.chk_fp16vae.isChecked(),
-                    no_smart_mem=self.chk_nosmart.isChecked(), reserve_vram=round(self.spin_reserve.value(), 1))
+                    no_smart_mem=self.chk_nosmart.isChecked(), reserve_vram=float(self.cb_reserve.currentData() or 0))
 
     def apply_options(self, opts):
         o = dict(DEFAULT_OPTIONS)
@@ -3692,7 +3708,7 @@ class MainWindow(QMainWindow):
         self.chk_fp8.setChecked(bool(o["fp8_unet"]))
         self.chk_fp16vae.setChecked(bool(o["fp16_vae"]))
         self.chk_nosmart.setChecked(bool(o["no_smart_mem"]))
-        self.spin_reserve.setValue(float(o["reserve_vram"] or 0))
+        self._set_reserve(o["reserve_vram"])
         self._applying = False
         self.cfg["options"] = self.current_options()
         save_config(self.cfg)
