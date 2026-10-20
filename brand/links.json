@@ -1,0 +1,11 @@
+{
+  "links": [
+    { "title": "YouTube", "url": "https://www.youtube.com/@neural_dreamer", "icon": "icons/youtube.png" },
+    { "title": "VK Видео", "url": "https://vkvideo.ru/@neural_dreamer", "icon": "icons/vkvideo.png" },
+    { "title": "Boosty", "url": "https://boosty.to/neural_dreamer", "icon": "icons/boosty.png" },
+    { "title": "Patreon", "url": "https://www.patreon.com/cw/neural_dreamer", "icon": "icons/patreon.png" },
+    { "title": "Civitai", "url": "https://civitai.red/user/Neural_Dreamer", "icon": "icons/civitai.png" },
+    { "title": "GitHub", "url": "https://github.com/neural-dreamer", "icon": "icons/github.png" },
+    { "title": "Hugging Face", "url": "https://huggingface.co/NeuralDreamer", "icon": "icons/huggingface.png" }
+  ]
+}

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Личные настройки лаунчера (пути, токены API) — никогда не коммитить
+nd_launcher.json
+
+# Временные файлы загрузок и переноса
+*.ndpart
+*.ndlink
+.nd_hf_*/
+.hf_home/
+
+# Скачанные иконки ссылок: генерируются при сборке (build_exe.bat / GitHub Actions)
+brand/icons/*
+!brand/icons/.gitkeep
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Своя картинка example.png (выбирается в настройках)
+nd_example_custom.png

@@ -1,0 +1,66 @@
+{
+  "format": "ndesc",
+  "version": 1,
+  "build": {
+    "name": "Сборка ND",
+    "version": "2026.10",
+    "author": "ND"
+  },
+  "workflows": {
+    "txt2img_flux.json": {
+      "title": "Flux · текст в картинку",
+      "short": "Базовая генерация изображений по текстовому описанию на модели Flux Dev.",
+      "category": "Генерация",
+      "tags": ["flux", "txt2img", "новичкам"],
+      "preview": "previews/txt2img_flux.png",
+      "description": [
+        "Стартовый воркфлоу сборки. Подходит, чтобы разобраться с интерфейсом и получить первые картинки.",
+        "",
+        "**Что внутри:** загрузка Flux Dev в fp8, текстовый энкодер T5, сэмплер с оптимальными настройками и сохранение результата в папку output.",
+        "",
+        "Все служебные ноды спрятаны в группы — менять нужно только промпт, размер и сид."
+      ],
+      "steps": [
+        "Впиши промпт на английском в поле «Prompt».",
+        "Выбери размер картинки (по умолчанию 1024×1024).",
+        "Нажми Run — результат появится справа и в папке output."
+      ],
+      "models": [
+        { "name": "flux1-dev-fp8.safetensors", "folder": "diffusion_models", "size": "11.9 ГБ" },
+        { "name": "t5xxl_fp8_e4m3fn.safetensors", "folder": "text_encoders", "size": "4.9 ГБ" },
+        { "name": "clip_l.safetensors", "folder": "text_encoders", "size": "246 МБ" },
+        { "name": "ae.safetensors", "folder": "vae", "size": "335 МБ" }
+      ],
+      "custom_nodes": ["rgthree-comfy"],
+      "vram": "12 ГБ+ (8 ГБ с режимом Low VRAM)",
+      "time": "~25 с на картинку 1024×1024 (RTX 4070 Ti Super)",
+      "version": "1.0",
+      "updated": "2026-10-17",
+      "author": "ND"
+    },
+    "Video/wan_i2v.json": {
+      "title": "WAN · оживление картинки",
+      "short": "Делает короткое видео из одного изображения и текстовой подсказки.",
+      "category": "Видео",
+      "tags": ["wan", "i2v", "видео"],
+      "description": "Загрузи картинку, опиши движение — получишь ролик на 5 секунд.\n\nДля длинных роликов включи пресет запуска **«Видео и большие модели»**.",
+      "steps": [
+        "Загрузи стартовый кадр в ноду Load Image.",
+        "Опиши, что должно происходить в кадре.",
+        "Нажми Run и дождись сборки видео."
+      ],
+      "models": [
+        { "name": "wan2.2_i2v_fp8.safetensors", "folder": "diffusion_models" },
+        { "name": "umt5_xxl_fp8.safetensors", "folder": "text_encoders" },
+        { "name": "wan_2.1_vae.safetensors", "folder": "vae" }
+      ],
+      "custom_nodes": [
+        { "name": "ComfyUI-KJNodes", "url": "https://github.com/kijai/ComfyUI-KJNodes" },
+        "ComfyUI-VideoHelperSuite"
+      ],
+      "vram": "16 ГБ",
+      "version": "1.2",
+      "updated": "2026-10-10"
+    }
+  }
+}
