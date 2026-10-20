@@ -1910,10 +1910,12 @@ class TaskRunner(QObject):
             self.output.emit(tr('[ND] ✖ {0}: не удалось запустить процесс\n', label))
             QTimer.singleShot(0, self._next)
 
-    def kill(self):
+    def kill(self, wait_ms=0):
         self.steps = []
         if self.proc and self.proc.state() != QProcess.NotRunning:
             self.proc.kill()
+            if wait_ms:  # пока процесс жив, Windows не даёт удалить открытые им файлы
+                self.proc.waitForFinished(wait_ms)
 
 
 class NoWheelComboBox(QComboBox):
@@ -3310,20 +3312,30 @@ class MainWindow(QMainWindow):
         self._render_dl_queue()
         return None
 
-    def _cleanup_partial(self, q):
+    def _cleanup_partial(self, q, attempt=0):
+        """Удаляет недокачанный .ndpart и временную папку Hugging Face.
+        Если файл ещё занят (процесс загрузки или антивирус), повторяет попытку несколько раз."""
+        left = False
+        part = Path(str(q["dest"]) + ".ndpart")
         try:
-            part = Path(str(q["dest"]) + ".ndpart")
             if part.exists():
                 part.unlink()
         except OSError:
-            pass
-        if q.get("stage"):
-            shutil.rmtree(q["stage"], ignore_errors=True)
+            left = True
+        stage = q.get("stage")
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
+            left = left or Path(stage).exists()
+        if left:
+            if attempt < 10:
+                QTimer.singleShot(500, lambda: self._cleanup_partial(q, attempt + 1))
+            else:
+                self.console.system(tr("Не удалось удалить недокачанный файл: {0}", part), error=True)
 
     def cancel_downloads(self):
         if not self.dl_tasks.busy:
             return
-        self.dl_tasks.kill()
+        self.dl_tasks.kill(wait_ms=5000)
         for q in self.dl_queue:
             if q["status"] in ("queued", "work"):
                 if q["status"] == "work":

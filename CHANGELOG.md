@@ -7,6 +7,7 @@ Each version's section is used as the notes of its GitHub release.
 
 ### Fixed
 - Hugging Face downloads failed with `ModuleNotFoundError: No module named 'venv'` on builds with a recent `huggingface_hub`: its CLI imports `venv`, which the portable `python_embeded` does not include.
+- Cancelling a download now deletes the partial `.ndpart` file (and the Hugging Face temp folder): the launcher waits for the download process to exit and retries if the file is still locked.
 
 ## [1.1.0] — 2026-10-20
 
