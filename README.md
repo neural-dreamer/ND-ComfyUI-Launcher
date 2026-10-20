@@ -22,7 +22,7 @@ No more `.bat` files and launch flags to remember. ND Launcher starts ComfyUI wi
 
 - **Launch** — ready-made presets (Standard, Save VRAM, Maximum speed, Video & large models, CPU only) plus your own. VRAM mode, attention (SageAttention, FlashAttention), fp8 / fp16, reserved VRAM, LAN access and port as simple controls. One-click desktop shortcut that starts ComfyUI right away, optionally minimized to the tray.
 - **Console** — ComfyUI output inside the window with errors highlighted, generation progress, and a GPU monitor (VRAM, load, temperature).
-- **Workflows** — every workflow in the build, searchable, with a description panel: what it does, how to use it, and which models and custom nodes it needs, checked against what you actually have installed.
+- **Workflows** — every workflow in the build, searchable, with a description panel: what it does, how to use it, and which models it needs, checked against the models you actually have.
 - **Updates** — update ComfyUI (with or without dependencies) and all custom nodes in one click; enable or disable nodes without deleting them.
 - **Install nodes** — paste one or more repository links (GitHub, GitLab, a branch, or the short `author/repo` form); the node is cloned and its dependencies installed.
 - **Model downloads** — paste a Hugging Face or Civitai link, pick files and destination folders, and see free disk space before you start.
