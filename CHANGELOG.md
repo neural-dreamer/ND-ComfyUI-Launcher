@@ -21,6 +21,7 @@ First public release.
 
 ### Changed
 - The launcher is distributed as source code: build `ND_Launcher.exe` yourself with `build_exe.bat` (one click, needs Python 3.10+; everything is installed into a local `.build_venv`). A locally built exe is not blocked by Windows SmartScreen. The exe now carries version and publisher info.
+- Language buttons are labelled in their own language: РУ, EN, 中文.
 - Folder pickers open downwards, start at “Other folder…” and ignore the mouse wheel when closed.
 - Table headers follow the rounded panel corners.
 - “Reserved VRAM” is now a drop-down list like the other launch options.

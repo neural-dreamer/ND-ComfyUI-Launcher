@@ -53,7 +53,7 @@ try:
 except Exception:
     TRANSLATIONS = {}
 
-LANGS = [("ru", "RU", "Русский"), ("en", "EN", "English"), ("zh", "ZH", "中文")]
+LANGS = [("ru", "РУ", "Русский"), ("en", "EN", "English"), ("zh", "中文", "中文")]  # подпись кнопки — на своём языке
 QT_LOCALES = {"ru": "ru", "en": "en", "zh": "zh_CN"}
 _LANG = "ru"
 _qt_translator = None
