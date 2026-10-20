@@ -23,11 +23,11 @@ First public release.
 - Folder pickers open downwards, start at “Other folder…” and ignore the mouse wheel when closed.
 - Table headers follow the rounded panel corners.
 - “Reserved VRAM” is now a drop-down list like the other launch options.
+- Workflow descriptions no longer list custom nodes (`custom_nodes` is ignored).
+- The description panel on the Workflows tab is hidden when there is no valid `.ndesc` file.
 
 ### Fixed
 - “&” was shown as an underscore in some English labels (“Folders & links”, “Settings & Manager”).
-- Workflow descriptions no longer list custom nodes (`custom_nodes` is ignored).
-- The description panel on the Workflows tab is hidden when there is no valid `.ndesc` file.
 
 ## [1.0.1]
 
