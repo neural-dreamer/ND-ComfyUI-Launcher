@@ -39,19 +39,29 @@ No more `.bat` files and launch flags to remember. ND Launcher starts ComfyUI wi
 
 ## Installation
 
-1. Download `ND_Launcher_vX.Y.Z.zip` from the [latest release](https://github.com/neural-dreamer/ND-ComfyUI-Launcher/releases/latest) and unpack it.
-2. Put `ND_Launcher.exe` into the root of your portable ComfyUI build, next to the `python_embeded` and `ComfyUI` folders:
+The launcher is distributed as source code: you build `ND_Launcher.exe` on your own PC with one click. A file built on your computer is not marked as downloaded from the internet, so Windows SmartScreen does not block it.
+
+### Build the exe (recommended)
+
+1. Install [Python 3.10 or newer](https://www.python.org/downloads/windows/). In the installer, tick **Add python.exe to PATH**.
+2. Download the source: the [latest release](https://github.com/neural-dreamer/ND-ComfyUI-Launcher/releases/latest) → **Source code (zip)**, or **Code → Download ZIP** on this page. Before unpacking, open the zip's **Properties** and tick **Unblock**, so Windows does not warn about the `.bat` files.
+3. Unpack it to any folder and run `build_exe.bat`. It needs internet and takes a few minutes the first time; everything it installs stays in the `.build_venv` folder next to it.
+4. Take `dist\ND_Launcher.exe` and put it into the root of your portable ComfyUI build, next to the `python_embeded` and `ComfyUI` folders:
    ```
    ComfyUI_windows_portable\
    ├── ComfyUI\
    ├── python_embeded\
    └── ND_Launcher.exe
    ```
-3. Run it. Nothing else needs to be installed.
+5. Run it. The exe needs nothing else installed, and you can copy it to other builds and PCs.
+
+> Some antivirus programs distrust exe files made with PyInstaller, whatever is inside. If yours removes `ND_Launcher.exe`, add an exclusion for it or use the option below.
+
+### Run without an exe
+
+Copy `nd_launcher.py`, `nd_i18n.py`, `nd_icon.ico`, the `brand\` folder and `ND_Launcher.bat` into the root of your build and run `ND_Launcher.bat`. On first start it installs PySide6 into `python_embeded`.
 
 **Requirements:** Windows 10 / 11 (64-bit) and any portable ComfyUI build with `python_embeded`. Optional: [Git for Windows](https://git-scm.com) for updating custom nodes, an NVIDIA GPU for the GPU monitor.
-
-> **Windows SmartScreen.** The exe is not code-signed, so Windows may show “Windows protected your PC”. Click **More info → Run anyway**. Every release is built from this source code by [GitHub Actions](.github/workflows/release.yml), so you can check exactly what went into it.
 
 ## Good to know
 
@@ -62,12 +72,10 @@ No more `.bat` files and launch flags to remember. ND Launcher starts ComfyUI wi
 - **Example image.** After every ComfyUI update, the launcher replaces `ComfyUI/input/example.png` with the Neural Dreamer logo. In Settings you can choose your own image or turn this off.
 - **Workflow descriptions** live in `utils/*.ndesc` (plain JSON). If there are none, the Workflows tab shows just the list. To generate them with an AI model (Claude, ChatGPT and others), use the [ndesc-writer skill](skills/ndesc-writer/SKILL.md). See also the [format spec](docs/NDESC_FORMAT.md) (in Russian) and the [example](utils/workflows.ndesc.example).
 
-## Running from source & building
+## For developers
 
-- **Run from source.** Copy `nd_launcher.py`, `nd_i18n.py`, `nd_icon.ico`, `brand\` and `ND_Launcher.bat` into the build root and run `ND_Launcher.bat`. It installs PySide6 into `python_embeded` on first start.
-- **Build the exe locally.** Install Python 3.10+, then run `build_exe.bat`. The result is `dist\ND_Launcher.exe` with `brand\` (links, icons, logo) embedded.
-- **Release.** Bump `VERSION` in `nd_launcher.py`, add a section to [CHANGELOG.md](CHANGELOG.md) and push a tag such as `v1.1.0`. GitHub Actions builds the exe and publishes the release.
-- **Fork branding.** Run `ND_Links_Editor.bat` to change the links shown in the launcher, and replace `brand\example.png` with your own logo.
+- **Release.** Bump `VERSION` in `nd_launcher.py`, add a section to [CHANGELOG.md](CHANGELOG.md) and publish a GitHub release with a tag such as `v1.1.0` and the changelog section as notes.
+- **Fork branding.** Run `ND_Links_Editor.bat` to change the links shown in the launcher, and replace `brand\example.png` with your own logo. Then build with `build_exe.bat`.
 
 ## License
 

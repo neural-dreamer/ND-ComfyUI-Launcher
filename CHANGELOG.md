@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to ND · ComfyUI Launcher. Versions follow [Semantic Versioning](https://semver.org).
-The release workflow publishes the section matching the pushed tag as the release notes.
+Each version's section is used as the notes of its GitHub release.
 
 ## [1.1.0] — 2026-10-20
 
@@ -20,6 +20,7 @@ First public release.
 - `ndesc-writer` skill (`skills/ndesc-writer/SKILL.md`) for generating workflow descriptions with Claude, ChatGPT and other LLMs.
 
 ### Changed
+- The launcher is distributed as source code: build `ND_Launcher.exe` yourself with `build_exe.bat` (one click, needs Python 3.10+; everything is installed into a local `.build_venv`). A locally built exe is not blocked by Windows SmartScreen. The exe now carries version and publisher info.
 - Folder pickers open downwards, start at “Other folder…” and ignore the mouse wheel when closed.
 - Table headers follow the rounded panel corners.
 - “Reserved VRAM” is now a drop-down list like the other launch options.

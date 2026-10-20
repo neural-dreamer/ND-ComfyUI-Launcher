@@ -39,19 +39,29 @@
 
 ## Установка
 
-1. Скачай `ND_Launcher_vX.Y.Z.zip` из [последнего релиза](https://github.com/neural-dreamer/ND-ComfyUI-Launcher/releases/latest) и распакуй.
-2. Положи `ND_Launcher.exe` в корень портативной сборки ComfyUI, рядом с папками `python_embeded` и `ComfyUI`:
+Лаунчер распространяется исходным кодом: `ND_Launcher.exe` собирается на твоём компьютере одним кликом. Файл, собранный у тебя, Windows не считает скачанным из интернета, поэтому SmartScreen его не блокирует.
+
+### Сборка exe (рекомендуется)
+
+1. Установи [Python 3.10 или новее](https://www.python.org/downloads/windows/). В установщике отметь **Add python.exe to PATH**.
+2. Скачай исходники: [последний релиз](https://github.com/neural-dreamer/ND-ComfyUI-Launcher/releases/latest) → **Source code (zip)** или **Code → Download ZIP** на этой странице. Перед распаковкой открой **Свойства** архива и отметь **Разблокировать**, чтобы Windows не предупреждала о `.bat`-файлах.
+3. Распакуй в любую папку и запусти `build_exe.bat`. Нужен интернет, первая сборка занимает несколько минут; всё, что он ставит, остаётся в папке `.build_venv` рядом с ним.
+4. Возьми `dist\ND_Launcher.exe` и положи в корень портативной сборки ComfyUI, рядом с папками `python_embeded` и `ComfyUI`:
    ```
    ComfyUI_windows_portable\
    ├── ComfyUI\
    ├── python_embeded\
    └── ND_Launcher.exe
    ```
-3. Запусти. Больше ничего ставить не нужно.
+5. Запусти. Готовому exe больше ничего не нужно, его можно копировать в другие сборки и на другие компьютеры.
+
+> Некоторые антивирусы не доверяют exe, собранным через PyInstaller, независимо от содержимого. Если твой удалит `ND_Launcher.exe`, добавь его в исключения или используй вариант ниже.
+
+### Запуск без exe
+
+Скопируй в корень сборки `nd_launcher.py`, `nd_i18n.py`, `nd_icon.ico`, папку `brand\` и `ND_Launcher.bat`, затем запусти `ND_Launcher.bat`. При первом запуске он поставит PySide6 в `python_embeded`.
 
 **Требования:** Windows 10 / 11 (64-бит) и любая портативная сборка ComfyUI с `python_embeded`. По желанию: [Git for Windows](https://git-scm.com) для обновления кастом-нод и видеокарта NVIDIA для монитора GPU.
-
-> **Windows SmartScreen.** Exe не подписан цифровой подписью, поэтому Windows может показать «Система Windows защитила ваш компьютер». Нажми **Подробнее → Выполнить в любом случае**. Каждый релиз собирается из этого исходного кода через [GitHub Actions](.github/workflows/release.yml), так что можно проверить, из чего он сделан.
 
 ## Полезно знать
 
@@ -62,12 +72,10 @@
 - **Картинка-пример.** После каждого обновления ComfyUI лаунчер заменяет `ComfyUI/input/example.png` логотипом Neural Dreamer. В «Настройках» можно выбрать свою картинку или отключить замену.
 - **Описания воркфлоу** лежат в `utils/*.ndesc` (обычный JSON). Если их нет, на вкладке «Воркфлоу» остаётся только список. Чтобы сгенерировать описания нейросетью (Claude, ChatGPT и другими), используй [скилл ndesc-writer](skills/ndesc-writer/SKILL.md). См. также [описание формата](docs/NDESC_FORMAT.md) и [пример](utils/workflows.ndesc.example).
 
-## Запуск из исходников и сборка
+## Для разработчиков
 
-- **Запуск из исходников.** Скопируй в корень сборки `nd_launcher.py`, `nd_i18n.py`, `nd_icon.ico`, папку `brand\` и `ND_Launcher.bat`, затем запусти `ND_Launcher.bat`. При первом запуске он поставит PySide6 в `python_embeded`.
-- **Сборка exe локально.** Установи Python 3.10+ и запусти `build_exe.bat`. Получится `dist\ND_Launcher.exe` со встроенной папкой `brand\` (ссылки, иконки, логотип).
-- **Релиз.** Подними `VERSION` в `nd_launcher.py`, добавь раздел в [CHANGELOG.md](CHANGELOG.md) и отправь тег вида `v1.1.0`. GitHub Actions соберёт exe и опубликует релиз.
-- **Свой брендинг в форке.** `ND_Links_Editor.bat` меняет ссылки, которые показывает лаунчер, а `brand\example.png` можно заменить своим логотипом.
+- **Релиз.** Подними `VERSION` в `nd_launcher.py`, добавь раздел в [CHANGELOG.md](CHANGELOG.md) и опубликуй релиз на GitHub с тегом вида `v1.1.0`, а в описание вставь раздел из CHANGELOG.
+- **Свой брендинг в форке.** `ND_Links_Editor.bat` меняет ссылки, которые показывает лаунчер, а `brand\example.png` можно заменить своим логотипом. Затем собери exe через `build_exe.bat`.
 
 ## Лицензия
 

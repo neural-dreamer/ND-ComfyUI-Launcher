@@ -39,19 +39,29 @@
 
 ## 安装
 
-1. 从[最新版本](https://github.com/neural-dreamer/ND-ComfyUI-Launcher/releases/latest)下载 `ND_Launcher_vX.Y.Z.zip` 并解压。
-2. 将 `ND_Launcher.exe` 放到便携版 ComfyUI 的根目录，与 `python_embeded` 和 `ComfyUI` 文件夹同级：
+启动器以源代码形式发布：在你自己的电脑上一键构建 `ND_Launcher.exe`。在本机构建的文件不会被标记为来自互联网，因此 Windows SmartScreen 不会拦截它。
+
+### 构建 exe（推荐）
+
+1. 安装 [Python 3.10 或更高版本](https://www.python.org/downloads/windows/)。在安装程序中勾选 **Add python.exe to PATH**。
+2. 下载源代码：[最新版本](https://github.com/neural-dreamer/ND-ComfyUI-Launcher/releases/latest) → **Source code (zip)**，或在本页点击 **Code → Download ZIP**。解压前打开压缩包的 **属性** 并勾选 **解除锁定**，这样 Windows 不会对 `.bat` 文件发出警告。
+3. 解压到任意文件夹并运行 `build_exe.bat`。需要联网，首次构建需要几分钟；它安装的所有内容都只保存在旁边的 `.build_venv` 文件夹中。
+4. 将 `dist\ND_Launcher.exe` 放到 ComfyUI 便携版的根目录，与 `python_embeded` 和 `ComfyUI` 文件夹并列：
    ```
    ComfyUI_windows_portable\
    ├── ComfyUI\
    ├── python_embeded\
    └── ND_Launcher.exe
    ```
-3. 运行即可，无需安装其他任何东西。
+5. 运行即可。构建好的 exe 无需安装其他任何东西，可以复制到其他整合包和电脑上使用。
 
-**系统要求：** Windows 10 / 11（64 位），以及任意带 `python_embeded` 的便携版 ComfyUI。可选：用于更新自定义节点的 [Git for Windows](https://git-scm.com)，用于显卡监控的 NVIDIA 显卡。
+> 部分杀毒软件不信任用 PyInstaller 打包的 exe，无论其内容如何。如果你的杀毒软件删除了 `ND_Launcher.exe`，请将其加入排除项，或使用下面的方式。
 
-> **Windows SmartScreen。** 该 exe 未进行代码签名，Windows 可能提示“Windows 已保护你的电脑”。请点击 **更多信息 → 仍要运行**。每个版本都由 [GitHub Actions](.github/workflows/release.yml) 基于本仓库源码构建，你可以核对其中的全部内容。
+### 不使用 exe 运行
+
+将 `nd_launcher.py`、`nd_i18n.py`、`nd_icon.ico`、`brand\` 文件夹和 `ND_Launcher.bat` 复制到整合包根目录，然后运行 `ND_Launcher.bat`。首次启动时它会把 PySide6 安装到 `python_embeded`。
+
+**系统要求：** Windows 10 / 11（64 位）以及任何带 `python_embeded` 的 ComfyUI 便携版。可选：用于更新自定义节点的 [Git for Windows](https://git-scm.com)，以及用于 GPU 监控的 NVIDIA 显卡。
 
 ## 须知
 
@@ -62,12 +72,10 @@
 - **示例图片。** 每次更新 ComfyUI 后，启动器会把 `ComfyUI/input/example.png` 替换为 Neural Dreamer 徽标。可在“设置”中选择自己的图片或关闭此功能。
 - **工作流描述**存放在 `utils/*.ndesc`（纯 JSON）。如果没有描述，“工作流”选项卡只显示列表。可使用 [ndesc-writer 技能](skills/ndesc-writer/SKILL.md)让 AI 模型（Claude、ChatGPT 等）生成描述。另见[格式说明](docs/NDESC_FORMAT.md)（俄文）和[示例](utils/workflows.ndesc.example)。
 
-## 从源码运行与构建
+## 开发者
 
-- **从源码运行：** 将 `nd_launcher.py`、`nd_i18n.py`、`nd_icon.ico`、`brand\` 文件夹和 `ND_Launcher.bat` 复制到整合包根目录，然后运行 `ND_Launcher.bat`。首次启动时会把 PySide6 安装到 `python_embeded`。
-- **本地构建 exe：** 安装 Python 3.10+，然后运行 `build_exe.bat`。生成的 `dist\ND_Launcher.exe` 已内置 `brand\`（链接、图标、徽标）。
-- **发布：** 修改 `nd_launcher.py` 中的 `VERSION`，在 [CHANGELOG.md](CHANGELOG.md) 中添加对应章节，然后推送 `v1.1.0` 这样的标签。GitHub Actions 会自动构建 exe 并发布版本。
-- **分支自定义品牌：** 运行 `ND_Links_Editor.bat` 修改启动器中显示的链接，并可用自己的徽标替换 `brand\example.png`。
+- **发布：** 修改 `nd_launcher.py` 中的 `VERSION`，在 [CHANGELOG.md](CHANGELOG.md) 中添加对应章节，然后在 GitHub 上发布带有 `v1.1.0` 这类标签的版本，并将该章节作为发布说明。
+- **分支自定义品牌：** 运行 `ND_Links_Editor.bat` 修改启动器中显示的链接，并可用自己的徽标替换 `brand\example.png`。然后使用 `build_exe.bat` 构建。
 
 ## 许可证
 
