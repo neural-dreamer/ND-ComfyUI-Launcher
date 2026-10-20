@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="brand/example.png" width="120" alt="Neural Dreamer">
+<img src="docs/logo.png" width="180" alt="ND · ComfyUI Launcher">
 
 # ND · ComfyUI Launcher
 
