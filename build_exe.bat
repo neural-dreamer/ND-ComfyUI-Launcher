@@ -28,7 +28,8 @@ if not exist "brand\example.png" (
 echo [ND] Проверяю иконки ссылок...
 %SYS_PY% nd_launcher.py --fetch-icons
 
-%SYS_PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name ND_Launcher --icon nd_icon.ico --add-data "brand;brand" --hidden-import nd_i18n nd_launcher.py
+%SYS_PY% tools\make_version_info.py
+%SYS_PY% -m PyInstaller --noconfirm --clean --onefile --windowed --name ND_Launcher --icon nd_icon.ico --version-file version_info.txt --noupx --add-data "brand;brand" --hidden-import nd_i18n nd_launcher.py
 if errorlevel 1 (
     echo [ND] Сборка не удалась, смотри лог выше.
     pause

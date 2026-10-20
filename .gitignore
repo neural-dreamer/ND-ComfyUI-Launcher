@@ -8,6 +8,7 @@ venv/
 build/
 dist/
 *.spec
+version_info.txt
 
 # Личные настройки лаунчера (пути, токены API) — никогда не коммитить
 nd_launcher.json
