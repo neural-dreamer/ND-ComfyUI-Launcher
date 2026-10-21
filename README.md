@@ -25,7 +25,7 @@ No more `.bat` files and launch flags to remember. ND Launcher starts ComfyUI wi
 - **Workflows** — every workflow in the build, searchable, with a description panel: what it does, how to use it, and which models it needs, checked against the models you actually have.
 - **Updates** — update ComfyUI (with or without dependencies) and all custom nodes in one click; enable or disable nodes without deleting them.
 - **Install nodes** — paste one or more repository links (GitHub, GitLab, a branch, or the short `author/repo` form); the node is cloned and its dependencies installed.
-- **Model downloads** — paste a Hugging Face or Civitai link, pick files and destination folders, and see free disk space before you start.
+- **Model downloads** — paste a Hugging Face or Civitai link, pick files and destination folders, and see free disk space before you start. Downloads can be paused and resumed, even after restarting the launcher.
   - Files download straight into the chosen folder over up to 16 parallel connections, with no extra tools needed. Hugging Face files are verified with SHA-256.
   - Optionally, Hugging Face can use the official `hf download` with Xet instead.
   - Destination roots can come from your `extra_model_paths.yaml`.
