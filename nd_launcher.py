@@ -572,6 +572,7 @@ def civitai_normalize(model, host, version_id=None):
             note = " · ".join(str(x) for x in (f.get("type"), meta.get("fp"), meta.get("size"), meta.get("format")) if x)
             size = int(float(f.get("sizeKB") or f.get("sizeKb") or 0) * 1024)
             files.append(dict(name=f.get("name") or f"file_{f.get('id')}", size=size, note=note, url=url,
+                              sha256=str((f.get("hashes") or {}).get("SHA256") or "").lower(),
                               folder=suggest_folder(f.get("name") or "", mtype, f.get("type")),
                               checked=bool(f.get("primary"))))
         if files and not any(x["checked"] for x in files):
@@ -688,7 +689,7 @@ sys.exit(main())
 # Многопоточная загрузка (Civitai): одна подписанная ссылка на хранилище, файл качается кусками в N соединений.
 # Коды выхода: 3 — нет доступа (нужен токен), 4 — не найдено, 5 — ошибка HTTP, 6 — сеть, 7 — размер не совпал.
 FAST_DL_SCRIPT = r"""
-import os, sys, time, hashlib, threading, urllib.request, urllib.error, urllib.parse
+import os, sys, json, time, hashlib, threading, urllib.request, urllib.error, urllib.parse
 url, dest, conns = sys.argv[1], sys.argv[2], max(1, min(32, int(sys.argv[3])))
 want_sha = (sys.argv[4] if len(sys.argv) > 4 else "").strip().lower()
 token = os.environ.get("ND_DL_TOKEN", "")
@@ -741,9 +742,23 @@ resp.close()
 total = cr.rsplit("/", 1)[-1]
 size = int(total) if status == 206 and total.isdigit() else (int(cl) if status == 200 and cl.isdigit() else 0)
 ranged = status == 206 and size > 0
-tmp = dest + ".ndpart"
-if os.path.exists(tmp):
-    os.remove(tmp)
+tmp, state_path = dest + ".ndpart", dest + ".ndpart.json"
+CHUNK = 32 * 1024 * 1024
+# Докачка: в .ndpart.json для каждого куска записано, до какого байта он уже скачан.
+# Пауза в лаунчере просто останавливает процесс, а при следующем запуске качаются только недостающие байты.
+parts = None
+if ranged and os.path.exists(tmp) and os.path.exists(state_path):
+    try:
+        with open(state_path, encoding="utf-8") as fs:
+            st = json.load(fs)
+        if st.get("size") == size and st.get("chunk") == CHUNK and os.path.getsize(tmp) == size:
+            parts = {int(k): int(v) for k, v in st["parts"].items()}
+    except Exception:
+        parts = None
+if parts is None:
+    for f_ in (tmp, state_path):
+        if os.path.exists(f_):
+            os.remove(f_)
 done, lock, errors, finished = [0], threading.Lock(), [], threading.Event()
 link = {"cur": cur, "auth": auth, "at": time.time()}
 def refresh_link(seen_at):
@@ -769,22 +784,42 @@ def progress():
         sys.stdout.write("\r%3d%%|%-20s| %s/%s [%s/s]" % (pct, "#" * (pct // 5), fmt(d), fmt(size) if size else "?", fmt(speed)))
         sys.stdout.flush()
 threading.Thread(target=progress, daemon=True).start()
-if ranged and size > 32 * 1024 * 1024 and conns > 1:
-    with open(tmp, "wb") as f:
-        f.truncate(size)
-    chunk = max(16 * 1024 * 1024, size // (conns * 6))
-    queue = [(s, min(s + chunk, size) - 1) for s in range(0, size, chunk)]
+if ranged:
+    if parts is None:
+        with open(tmp, "wb") as f:
+            f.truncate(size)
+        parts = {s: s for s in range(0, size, CHUNK)}
+    else:
+        done[0] = sum(p - s for s, p in parts.items())
+        print("Resuming: %s of %s already downloaded" % (fmt(done[0]), fmt(size)), flush=True)
+    queue = [(s, min(s + CHUNK, size) - 1) for s in sorted(parts) if parts[s] < min(s + CHUNK, size)]
+    def save_state():
+        with lock:
+            data = json.dumps({"size": size, "chunk": CHUNK, "url": url, "parts": parts})
+        try:
+            with open(state_path + ".tmp", "w", encoding="utf-8") as fs:
+                fs.write(data)
+            os.replace(state_path + ".tmp", state_path)
+        except OSError:
+            pass
+    def saver():
+        while not finished.wait(2.0):
+            save_state()
+    save_state()
+    threading.Thread(target=saver, daemon=True).start()
     def worker():
         while True:
             with lock:
                 if not queue or errors:
                     return
                 start, end = queue.pop(0)
-            pos, tries = start, 0
+            pos, tries = parts[start], 0
             while pos <= end:
                 seen = link["at"]
                 try:
-                    with urllib.request.urlopen(req(link["cur"], link["auth"], (pos, end)), timeout=60) as r, open(tmp, "r+b") as f:
+                    # buffering=0: байты сразу уходят в ОС, поэтому записанный в .ndpart.json прогресс
+                    # никогда не опережает реально записанные данные, даже если процесс остановят посреди куска.
+                    with urllib.request.urlopen(req(link["cur"], link["auth"], (pos, end)), timeout=60) as r, open(tmp, "r+b", buffering=0) as f:
                         if r.status != 206:
                             raise IOError("no range support")
                         f.seek(pos)
@@ -796,6 +831,7 @@ if ranged and size > 32 * 1024 * 1024 and conns > 1:
                             pos += len(b)
                             with lock:
                                 done[0] += len(b)
+                                parts[start] = pos
                     if pos <= end:
                         raise IOError("short read")
                 except Exception as e:
@@ -812,6 +848,8 @@ if ranged and size > 32 * 1024 * 1024 and conns > 1:
         t.start()
     for t in threads:
         t.join()
+    finished.set()
+    save_state()
 else:
     try:
         with urllib.request.urlopen(req(link["cur"], link["auth"]), timeout=60) as r, open(tmp, "wb") as f:
@@ -850,9 +888,13 @@ if want_sha:
     if h.hexdigest() != want_sha:
         print("SHA-256 mismatch: got %s, expected %s" % (h.hexdigest(), want_sha), flush=True)
         os.remove(tmp)
+        if os.path.exists(state_path):
+            os.remove(state_path)
         sys.exit(8)
     print("SHA-256 OK", flush=True)
 os.replace(tmp, dest)
+if os.path.exists(state_path):
+    os.remove(state_path)
 print("OK", dest, flush=True)
 """
 
@@ -2207,6 +2249,7 @@ class MainWindow(QMainWindow):
         self.model_info = None
         self.dl_queue = []
         self.dl_current = None
+        self.dl_paused = False
         self._dl_poll = QTimer(self)   # запасной прогресс для Hugging Face: размер файлов во временной папке
         self._dl_poll.setInterval(1000)
         self._dl_poll.timeout.connect(self._poll_hf_progress)
@@ -2878,9 +2921,13 @@ class MainWindow(QMainWindow):
         self.lbl_dl.setObjectName("Mono")
         self.lbl_dl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.btn_dl_cancel = button(tr("Отмена"), self.cancel_downloads, "Danger")
+        self.btn_dl_pause = button(tr("❚❚  Пауза"), self.toggle_pause_downloads)
+        self.btn_dl_pause.setToolTip(tr("Пауза сохраняет скачанное, «Продолжить» докачивает с того же места."))
+        self.btn_dl_pause.setEnabled(False)
         prow.addWidget(self.dl_bar)
         prow.addWidget(self.lbl_dl, 1)
         prow.addWidget(button(tr("Очистить список"), self._clear_dl_queue))
+        prow.addWidget(self.btn_dl_pause)
         prow.addWidget(self.btn_dl_cancel)
         ql.addLayout(prow)
         self.tree_dl = QTreeWidget()
@@ -3285,16 +3332,21 @@ class MainWindow(QMainWindow):
                               ["-s", "-m", "pip", "install", "hf_xet"], self.root))
         for j in jobs:
             q = dict(name=j["name"], dest=j["dest"], folder=j["folder"], size=j["size"], status="queued",
-                     source=info["source"])
+                     source=info["source"], f=j["f"], info=info)
             self.dl_queue.append(q)
-            steps += [lambda q=q: self._dl_begin(q), self._dl_step(q, j["f"], info), lambda q=q: self._dl_finish(q)]
+            steps += self._dl_steps(q)
         self._render_dl_queue()
-        if self.dl_tasks.busy:
+        if self.dl_paused:
+            self.console.system(tr("В очередь загрузок добавлено файлов: {0}", len(jobs)) + " · " + tr("загрузка на паузе"))
+        elif self.dl_tasks.busy:
             self.dl_tasks.extend(steps)
             self.console.system(tr("В очередь загрузок добавлено файлов: {0}", len(jobs)))
         else:
             self.dl_tasks.run(tr("Загрузка моделей ({0})", len(jobs)), steps)
         self.update_controls()
+
+    def _dl_steps(self, q):
+        return [lambda q=q: self._dl_begin(q), self._dl_step(q, q["f"], q["info"]), lambda q=q: self._dl_finish(q)]
 
     def _dl_step(self, q, f, info):
         conns = str(self.spin_conn.value())
@@ -3314,11 +3366,11 @@ class MainWindow(QMainWindow):
         if tok:
             env["ND_DL_TOKEN"] = tok
         return (f"Civitai · {q['name']}", self.python_exe,
-                ["-s", "-c", FAST_DL_SCRIPT, f["url"], str(q["dest"]), conns], q["folder"], env)
+                ["-s", "-c", FAST_DL_SCRIPT, f["url"], str(q["dest"]), conns, f.get("sha256") or ""], q["folder"], env)
 
     def _dl_step_hf_cli(self, q, f, info):
         """Загрузка через официальный hf CLI (Xet). Временная папка в папке назначения, в конце файл переносится."""
-        stage = q["folder"] / f".nd_hf_{abs(hash((str(q['dest']), time.time()))) % 10 ** 8}"
+        stage = q.get("stage") or q["folder"] / f".nd_hf_{abs(hash((str(q['dest']), time.time()))) % 10 ** 8}"
         q["via"], q["stage"], q["hf_path"] = "cli", stage, f["hf_path"]
         args = ["-s", "-c", HF_CLI_SHIM, "download", info["repo"], f["hf_path"], "--local-dir", str(stage)]
         if info["revision"] and info["revision"] != "main":
@@ -3420,8 +3472,12 @@ class MainWindow(QMainWindow):
                 q["error"] = tr("Нет доступа к файлу на Hugging Face: укажи токен, а для закрытых (gated) моделей прими условия на странице модели.")
             if q.get("via") == "cli" and code == 1:
                 q["error"] = tr("Hugging Face вернул ошибку — проверь токен и доступ к модели (подробности в консоли).")
-            self.console.system(f"{q['name']}: {q['error']}", error=True)
-            self._cleanup_partial(q)
+            if code == 6 and Path(str(q["dest"]) + ".ndpart.json").exists():
+                q["error"] += " " + tr("Скачанное сохранено: нажми «Скачать отмеченные» ещё раз, и загрузка продолжится с того же места.")
+                self.console.system(f"{q['name']}: {q['error']}", error=True)
+            else:
+                self.console.system(f"{q['name']}: {q['error']}", error=True)
+                self._cleanup_partial(q)
         self.dl_current = None
         self._render_dl_queue()
         return None
@@ -3431,11 +3487,12 @@ class MainWindow(QMainWindow):
         Если файл ещё занят (процесс загрузки или антивирус), повторяет попытку несколько раз."""
         left = False
         part = Path(str(q["dest"]) + ".ndpart")
-        try:
-            if part.exists():
-                part.unlink()
-        except OSError:
-            left = True
+        for f in (part, Path(str(part) + ".json")):
+            try:
+                if f.exists():
+                    f.unlink()
+            except OSError:
+                left = True
         stage = q.get("stage")
         if stage:
             shutil.rmtree(stage, ignore_errors=True)
@@ -3447,21 +3504,58 @@ class MainWindow(QMainWindow):
                 self.console.system(tr("Не удалось удалить недокачанный файл: {0}", part), error=True)
 
     def cancel_downloads(self):
-        if not self.dl_tasks.busy:
+        if not self.dl_tasks.busy and not self.dl_paused:
             return
         self._dl_poll.stop()
+        self.dl_paused = False
         self.dl_tasks.kill(wait_ms=5000)
         for q in self.dl_queue:
-            if q["status"] in ("queued", "work"):
-                if q["status"] == "work":
+            if q["status"] in ("queued", "work", "paused"):
+                if q["status"] in ("work", "paused"):
                     self._cleanup_partial(q)
                 q["status"] = "cancelled"
         self.dl_current = None
         self.console.system(tr("Загрузка отменена."))
         self._render_dl_queue()
+        self.update_controls()
+
+    def toggle_pause_downloads(self):
+        if self.dl_paused:
+            self.resume_downloads()
+        else:
+            self.pause_downloads()
+
+    def pause_downloads(self, quiet=False):
+        """Останавливает загрузку, но оставляет скачанное (.ndpart + .ndpart.json) для докачки."""
+        if not self.dl_tasks.busy:
+            return
+        self.dl_paused = True
+        self._dl_poll.stop()
+        self.dl_tasks.kill(wait_ms=5000)
+        for q in self.dl_queue:
+            if q["status"] == "work":
+                q["status"] = "paused"
+        self.dl_current = None
+        if not quiet:
+            self.console.system(tr("Загрузка на паузе. Скачанное сохранено."))
+            self.lbl_dl.setText(tr("На паузе"))
+        self._render_dl_queue()
+        self.update_controls()
+
+    def resume_downloads(self):
+        steps = []
+        for q in self.dl_queue:
+            if q["status"] in ("paused", "queued"):
+                q["status"] = "queued"
+                steps += self._dl_steps(q)
+        self.dl_paused = False
+        if steps:
+            self.dl_tasks.run(tr("Загрузка моделей ({0})", len(steps) // 3), steps)
+        self._render_dl_queue()
+        self.update_controls()
 
     def _clear_dl_queue(self):
-        self.dl_queue = [q for q in self.dl_queue if q["status"] in ("queued", "work")]
+        self.dl_queue = [q for q in self.dl_queue if q["status"] in ("queued", "work", "paused")]
         self._render_dl_queue()
 
     def _on_dl_output(self, text):
@@ -3479,6 +3573,10 @@ class MainWindow(QMainWindow):
             self.lbl_dl.setText(" · ".join(bits))
 
     def _on_dl_finished(self, title, errors):
+        if self.dl_paused:   # процесс остановлен кнопкой «Пауза», итог не подводим
+            self._render_dl_queue()
+            self.update_controls()
+            return
         done = sum(1 for q in self.dl_queue if q["status"] == "done")
         failed = sum(1 for q in self.dl_queue if q["status"] == "error")
         self.console.system(tr("{0}: скачано {1}, с ошибкой {2}", title, done, failed), error=bool(failed))
@@ -3494,7 +3592,7 @@ class MainWindow(QMainWindow):
             return
         names = {"queued": (tr("в очереди"), C["MUTED"]), "work": (tr("скачивается…"), C["CYAN"]),
                  "done": (tr("✓ готово"), C["GREEN"]), "error": (tr("✗ ошибка"), C["RED"]),
-                 "cancelled": (tr("отменено"), C["YELLOW"])}
+                 "cancelled": (tr("отменено"), C["YELLOW"]), "paused": (tr("на паузе"), C["YELLOW"])}
         self.tree_dl.clear()
         for q in self.dl_queue:
             label, color = names[q["status"]]
@@ -3510,8 +3608,10 @@ class MainWindow(QMainWindow):
                 it.setToolTip(2, q["error"])
             self.tree_dl.addTopLevelItem(it)
         busy = self.dl_tasks.busy
-        self.btn_dl_cancel.setEnabled(busy)
-        self.dl_bar.setVisible(busy or any(q["status"] != "queued" for q in self.dl_queue))
+        self.btn_dl_cancel.setEnabled(busy or self.dl_paused)
+        self.btn_dl_pause.setEnabled(busy or self.dl_paused)
+        self.btn_dl_pause.setText(tr("▶  Продолжить") if self.dl_paused else tr("❚❚  Пауза"))
+        self.dl_bar.setVisible(busy or self.dl_paused or any(q["status"] != "queued" for q in self.dl_queue))
 
     # ── страница: перенос ──
     def _page_transfer(self):
@@ -5314,7 +5414,7 @@ class MainWindow(QMainWindow):
                 return
             self.tasks.kill()
             if self.dl_tasks.busy:
-                self.cancel_downloads()
+                self.pause_downloads(quiet=True)   # недокачанное остаётся: при новой загрузке того же файла она продолжится
             if self._xfer_worker:
                 self._xfer_worker.cancel()
                 self._xfer_thread.quit()

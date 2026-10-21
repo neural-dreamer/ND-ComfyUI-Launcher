@@ -5,6 +5,10 @@ Each version's section is used as the notes of its GitHub release.
 
 ## [1.1.2] — 2026-10-21
 
+### Added
+- **Pause / Resume** for model downloads (Hugging Face and Civitai). Progress is saved next to the file (`.ndpart` + `.ndpart.json`), so a paused, interrupted or network-failed download continues from the same place — also after restarting the launcher: just start the same file again. Closing the launcher during a download pauses it instead of deleting what was downloaded.
+- Civitai downloads are checked against the SHA-256 published by Civitai.
+
 ### Changed
 - Hugging Face files now download the same way as Civitai: directly into the destination folder over several parallel connections (the “Connections” setting), with no temporary folder and no move at the end. After the download the file is checked against the SHA-256 published on Hugging Face; a corrupted file is deleted.
 - The official `hf download` (Xet) is still available as the “Hugging Face via hf CLI (Xet)” option, off by default. In this mode the launcher forces progress output, disables the Xet chunk cache and shows its own progress from the size on disk.
