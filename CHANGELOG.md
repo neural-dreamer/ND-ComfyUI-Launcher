@@ -3,6 +3,18 @@
 All notable changes to ND · ComfyUI Launcher. Versions follow [Semantic Versioning](https://semver.org).
 Each version's section is used as the notes of its GitHub release.
 
+## [1.1.2] — 2026-10-21
+
+### Changed
+- Hugging Face files now download the same way as Civitai: directly into the destination folder over several parallel connections (the “Connections” setting), with no temporary folder and no move at the end. After the download the file is checked against the SHA-256 published on Hugging Face; a corrupted file is deleted.
+- The official `hf download` (Xet) is still available as the “Hugging Face via hf CLI (Xet)” option, off by default. In this mode the launcher forces progress output, disables the Xet chunk cache and shows its own progress from the size on disk.
+
+### Fixed
+- Hugging Face downloads showed no progress and could seem stuck with a recent `huggingface_hub`.
+- The download status line flickered between two progress sources.
+- Expired storage links are renewed automatically during long downloads (Hugging Face and Civitai).
+- The “file already exists” prompt shows the size of the existing file.
+
 ## [1.1.1] — 2026-10-20
 
 ### Fixed

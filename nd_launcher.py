@@ -102,7 +102,7 @@ def install_qt_translator(code):
 
 
 APP_TITLE = "ND · ComfyUI Launcher"
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 DEFAULT_PORT = 8188
 BRAND_NAME = "Neural Dreamer"
 REPO_URL = "https://github.com/neural-dreamer/ND-ComfyUI-Launcher"
@@ -482,6 +482,14 @@ def http_get(url, headers=None, timeout=30):
         raise HttpError(0, str(getattr(e, "reason", e))) from None
 
 
+def hf_resolve_url(repo, path, revision="main", repo_type="model"):
+    """Прямая ссылка на файл Hugging Face (та же, что у кнопки «скачать» на сайте)."""
+    import urllib.parse
+    pre = "datasets/" if repo_type == "dataset" else ""
+    return (f"https://huggingface.co/{pre}{repo}/resolve/{urllib.parse.quote(revision or 'main', safe='')}/"
+            f"{urllib.parse.quote(path, safe='/')}")
+
+
 def hf_fetch(info, token=""):
     """Список файлов репозитория Hugging Face (с учётом ветки и подпапки из ссылки)."""
     import urllib.parse
@@ -495,8 +503,9 @@ def hf_fetch(info, token=""):
         for it in json.loads(body.decode("utf-8")):
             if it.get("type") != "file":
                 continue
-            size = (it.get("lfs") or {}).get("size") or it.get("size") or 0
-            files.append({"path": it["path"], "size": int(size)})
+            lfs = it.get("lfs") or {}
+            size = lfs.get("size") or it.get("size") or 0
+            files.append({"path": it["path"], "size": int(size), "sha256": str(lfs.get("oid") or "")})
         m = re.search(r'<([^>]+)>;\s*rel="next"', headers.get("Link", "") or "")
         url = m.group(1) if m else None
         pages += 1
@@ -506,7 +515,7 @@ def hf_fetch(info, token=""):
     out = []
     for f in sorted(files, key=lambda x: x["path"].lower()):
         out.append(dict(name=f["path"], size=f["size"], note="", folder=suggest_folder(f["path"]),
-                        checked=(f["path"] == info.get("file")), hf_path=f["path"]))
+                        checked=(f["path"] == info.get("file")), hf_path=f["path"], sha256=f["sha256"]))
     if info.get("file") and not any(f["checked"] for f in out):
         raise HttpError(404)
     title = info["repo"]
@@ -679,8 +688,9 @@ sys.exit(main())
 # Многопоточная загрузка (Civitai): одна подписанная ссылка на хранилище, файл качается кусками в N соединений.
 # Коды выхода: 3 — нет доступа (нужен токен), 4 — не найдено, 5 — ошибка HTTP, 6 — сеть, 7 — размер не совпал.
 FAST_DL_SCRIPT = r"""
-import os, sys, time, threading, urllib.request, urllib.error, urllib.parse
+import os, sys, time, hashlib, threading, urllib.request, urllib.error, urllib.parse
 url, dest, conns = sys.argv[1], sys.argv[2], max(1, min(32, int(sys.argv[3])))
+want_sha = (sys.argv[4] if len(sys.argv) > 4 else "").strip().lower()
 token = os.environ.get("ND_DL_TOKEN", "")
 UA = "ND-Launcher"
 def fmt(n):
@@ -699,23 +709,30 @@ def req(u, auth, rng=None):
     if rng:
         h["Range"] = "bytes=%d-%d" % rng
     return urllib.request.Request(u, headers=h)
-cur, auth = url, token
-resp = None
-try:
+class Fatal(Exception):
+    def __init__(self, code, msg):
+        Exception.__init__(self, msg)
+        self.code = code
+def resolve():
+    # Редиректы проходим сами: после перехода на хранилище токен не отправляем, ссылка там уже подписана.
+    cur, auth = url, token
     for _ in range(10):
         try:
             resp = opener.open(req(cur, auth, (0, 0)), timeout=60)
-            break
+            return cur, auth, resp
         except urllib.error.HTTPError as e:
             loc = e.headers.get("Location") if e.code in (301, 302, 303, 307, 308) else None
             if not loc:
-                print("HTTP %d" % e.code, flush=True)
-                sys.exit(3 if e.code in (401, 403) else 4 if e.code == 404 else 5)
+                raise Fatal(3 if e.code in (401, 403) else 4 if e.code == 404 else 5, "HTTP %d" % e.code)
             cur = urllib.parse.urljoin(cur, loc)
-            auth = ""  # после редиректа токен не нужен: ссылка на хранилище уже подписана
-    else:
-        print("too many redirects", flush=True)
-        sys.exit(5)
+            if urllib.parse.urlsplit(cur).netloc != urllib.parse.urlsplit(url).netloc:
+                auth = ""
+    raise Fatal(5, "too many redirects")
+try:
+    cur, auth, resp = resolve()
+except Fatal as e:
+    print(e, flush=True)
+    sys.exit(e.code)
 except (urllib.error.URLError, OSError) as e:
     print("network:", e, flush=True)
     sys.exit(6)
@@ -728,13 +745,26 @@ tmp = dest + ".ndpart"
 if os.path.exists(tmp):
     os.remove(tmp)
 done, lock, errors, finished = [0], threading.Lock(), [], threading.Event()
+link = {"cur": cur, "auth": auth, "at": time.time()}
+def refresh_link(seen_at):
+    # Подписанная ссылка на хранилище живёт ограниченное время: при 401/403 берём новую (один раз на всех).
+    with lock:
+        if link["at"] != seen_at:
+            return
+        try:
+            c, a, r = resolve()
+            r.close()
+            link.update(cur=c, auth=a, at=time.time())
+            print("\n[link refreshed]", flush=True)
+        except Exception as e:
+            print("\nrefresh failed:", e, flush=True)
 def progress():
-    t_last, d_last, speed = time.time(), 0, 0.0
-    while not finished.wait(0.5):
+    hist = []
+    while not finished.wait(1.0):
         now, d = time.time(), done[0]
-        inst = (d - d_last) / max(1e-3, now - t_last)
-        speed = inst if speed == 0 else speed * 0.7 + inst * 0.3
-        t_last, d_last = now, d
+        hist.append((now, d))
+        hist = [h for h in hist if now - h[0] <= 8]
+        speed = (d - hist[0][1]) / max(1e-3, now - hist[0][0]) if len(hist) > 1 else 0
         pct = int(d * 100 / size) if size else 0
         sys.stdout.write("\r%3d%%|%-20s| %s/%s [%s/s]" % (pct, "#" * (pct // 5), fmt(d), fmt(size) if size else "?", fmt(speed)))
         sys.stdout.flush()
@@ -752,8 +782,9 @@ if ranged and size > 32 * 1024 * 1024 and conns > 1:
                 start, end = queue.pop(0)
             pos, tries = start, 0
             while pos <= end:
+                seen = link["at"]
                 try:
-                    with urllib.request.urlopen(req(cur, auth, (pos, end)), timeout=60) as r, open(tmp, "r+b") as f:
+                    with urllib.request.urlopen(req(link["cur"], link["auth"], (pos, end)), timeout=60) as r, open(tmp, "r+b") as f:
                         if r.status != 206:
                             raise IOError("no range support")
                         f.seek(pos)
@@ -768,6 +799,8 @@ if ranged and size > 32 * 1024 * 1024 and conns > 1:
                     if pos <= end:
                         raise IOError("short read")
                 except Exception as e:
+                    if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403, 410):
+                        refresh_link(seen)
                     tries += 1
                     if tries > 6:
                         with lock:
@@ -781,7 +814,7 @@ if ranged and size > 32 * 1024 * 1024 and conns > 1:
         t.join()
 else:
     try:
-        with urllib.request.urlopen(req(cur, auth), timeout=60) as r, open(tmp, "wb") as f:
+        with urllib.request.urlopen(req(link["cur"], link["auth"]), timeout=60) as r, open(tmp, "wb") as f:
             while True:
                 b = r.read(1 << 20)
                 if not b:
@@ -799,6 +832,26 @@ if errors:
 if size and os.path.getsize(tmp) != size:
     print("size mismatch", flush=True)
     sys.exit(7)
+if want_sha:
+    print("Checking SHA-256...", flush=True)
+    h, got, t_last = hashlib.sha256(), 0, 0
+    with open(tmp, "rb") as f:
+        while True:
+            b = f.read(8 << 20)
+            if not b:
+                break
+            h.update(b)
+            got += len(b)
+            if size and time.time() - t_last > 1:
+                t_last = time.time()
+                sys.stdout.write("\rcheck %3d%%| %s/%s" % (got * 100 // size, fmt(got), fmt(size)))
+                sys.stdout.flush()
+    sys.stdout.write("\n")
+    if h.hexdigest() != want_sha:
+        print("SHA-256 mismatch: got %s, expected %s" % (h.hexdigest(), want_sha), flush=True)
+        os.remove(tmp)
+        sys.exit(8)
+    print("SHA-256 OK", flush=True)
 os.replace(tmp, dest)
 print("OK", dest, flush=True)
 """
@@ -922,7 +975,7 @@ DEFAULT_CONFIG = dict(
     transfer_source="", transfer_policy="skip", transfer_models_mode="copy", transfer_node_deps=True, transfer_gentle=True,
     transfer_input_mode="copy", transfer_output_mode="copy",
     browser="", browser_app_mode=False,
-    hf_token="", civitai_token="", dl_connections=8, dl_xet_hp=False, dl_last_folder="checkpoints", dl_custom_folders=[],
+    hf_token="", civitai_token="", dl_connections=8, dl_hf_cli=False, dl_last_folder="checkpoints", dl_custom_folders=[],
     minimize_to_tray=False, shortcut_name="ComfyUI Neural Dreamer", shortcut_minimized=False,
     arg_manager=True, arg_manager_legacy=True, arg_upload=True,
     example_replace=True, example_custom="",
@@ -2154,6 +2207,9 @@ class MainWindow(QMainWindow):
         self.model_info = None
         self.dl_queue = []
         self.dl_current = None
+        self._dl_poll = QTimer(self)   # запасной прогресс для Hugging Face: размер файлов во временной папке
+        self._dl_poll.setInterval(1000)
+        self._dl_poll.timeout.connect(self._poll_hf_progress)
         self._fetch_seq = 0
         self._bridge = _Bridge()
         self._bridge.done.connect(self._on_bridge)
@@ -2792,7 +2848,7 @@ class MainWindow(QMainWindow):
         self.lbl_space.setTextFormat(Qt.RichText)
         fl.addWidget(self.lbl_space)
         orow = QHBoxLayout()
-        orow.addWidget(muted(tr("Потоков (Civitai):"), False))
+        orow.addWidget(muted(tr("Потоков загрузки:"), False))
         self.spin_conn = QSpinBox()
         self.spin_conn.setRange(1, 16)
         self.spin_conn.setValue(int(self.cfg.get("dl_connections") or 8))
@@ -2801,11 +2857,11 @@ class MainWindow(QMainWindow):
         self.spin_conn.valueChanged.connect(lambda v: self._set_cfg("dl_connections", v))
         orow.addWidget(self.spin_conn)
         orow.addSpacing(12)
-        self.chk_xet_hp = QCheckBox(tr("Высокая скорость Hugging Face"))
-        self.chk_xet_hp.setToolTip(tr("HF_XET_HIGH_PERFORMANCE: больше потоков и буферов. Рекомендуется при 64 ГБ ОЗУ и быстром интернете."))
-        self.chk_xet_hp.setChecked(bool(self.cfg.get("dl_xet_hp")))
-        self.chk_xet_hp.toggled.connect(lambda v: self._set_cfg("dl_xet_hp", v))
-        orow.addWidget(self.chk_xet_hp)
+        self.chk_hf_cli = QCheckBox(tr("Hugging Face через hf CLI (Xet)"))
+        self.chk_hf_cli.setToolTip(tr("По умолчанию файлы с Hugging Face качаются напрямую в несколько потоков с проверкой SHA-256.\nЭта опция включает загрузку официальной командой hf download (Xet) из python_embeded."))
+        self.chk_hf_cli.setChecked(bool(self.cfg.get("dl_hf_cli")))
+        self.chk_hf_cli.toggled.connect(lambda v: self._set_cfg("dl_hf_cli", v))
+        orow.addWidget(self.chk_hf_cli)
         orow.addStretch()
         self.btn_download = button(tr("⇩   Скачать отмеченные"), self.start_downloads, "Accent")
         orow.addWidget(self.btn_download)
@@ -3196,7 +3252,7 @@ class MainWindow(QMainWindow):
         if existing:
             box = QMessageBox(self)
             box.setWindowTitle(APP_TITLE)
-            box.setText(tr("Эти файлы уже есть:") + "\n\n" + "\n".join(str(j["dest"]) for j in existing[:10])
+            box.setText(tr("Эти файлы уже есть:") + "\n\n" + "\n".join(f'{j["dest"]}  ({fmt_size(j["dest"].stat().st_size) if j["dest"].is_file() else "?"})' for j in existing[:10])
                         + ("\n…" if len(existing) > 10 else "") + "\n\n" + tr("Перезаписать их?"))
             yes = box.addButton(tr("Перезаписать"), QMessageBox.YesRole)
             skip = box.addButton(tr("Пропустить"), QMessageBox.NoRole)
@@ -3220,7 +3276,7 @@ class MainWindow(QMainWindow):
             return
         self._set_cfg("dl_last_folder", self.cb_dl_folder.currentData(Qt.UserRole + 1) or self.cb_dl_folder.currentData())
         steps = []
-        if info["source"] == "hf":
+        if info["source"] == "hf" and self.chk_hf_cli.isChecked():   # пакеты нужны только для режима hf CLI
             if not self.has_package("huggingface_hub"):
                 steps.append((tr("Установка huggingface_hub"), self.python_exe,
                               ["-s", "-m", "pip", "install", "huggingface_hub"], self.root))
@@ -3241,28 +3297,45 @@ class MainWindow(QMainWindow):
         self.update_controls()
 
     def _dl_step(self, q, f, info):
+        conns = str(self.spin_conn.value())
+        if info["source"] == "hf" and self.chk_hf_cli.isChecked():
+            return self._dl_step_hf_cli(q, f, info)
         if info["source"] == "hf":
-            stage = q["folder"] / f".nd_hf_{abs(hash((str(q['dest']), time.time()))) % 10 ** 8}"
-            q["stage"], q["hf_path"] = stage, f["hf_path"]
-            args = ["-s", "-c", HF_CLI_SHIM, "download", info["repo"], f["hf_path"], "--local-dir", str(stage)]
-            if info["revision"] and info["revision"] != "main":
-                args += ["--revision", info["revision"]]
-            if info["repo_type"] == "dataset":
-                args += ["--repo-type", "dataset"]
-            env = {"HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
-                   "HF_HUB_DOWNLOAD_TIMEOUT": "60", "HF_HOME": str(self.root / ".hf_home")}
-            tok = self.edit_hf_token.text().strip()
-            if tok:
-                env["HF_TOKEN"] = tok
-            if self.chk_xet_hp.isChecked():
-                env["HF_XET_HIGH_PERFORMANCE"] = "1"
-            return (f"hf download · {q['name']}", self.python_exe, args, q["folder"], env)
+            # Обычная прямая загрузка по ссылке /resolve/, как в браузере, но в несколько потоков:
+            # файл пишется сразу в папку назначения (.ndpart), после загрузки сверяется SHA-256.
+            q["via"] = "direct"
+            env = {"ND_DL_TOKEN": self.edit_hf_token.text().strip()}
+            url = hf_resolve_url(info["repo"], f["hf_path"], info["revision"], info["repo_type"])
+            return (f"Hugging Face · {q['name']}", self.python_exe,
+                    ["-s", "-c", FAST_DL_SCRIPT, url, str(q["dest"]), conns, f.get("sha256") or ""], q["folder"], env)
+        q["via"] = "direct"
         env = {}
         tok = self.edit_civ_token.text().strip()
         if tok:
             env["ND_DL_TOKEN"] = tok
         return (f"Civitai · {q['name']}", self.python_exe,
-                ["-s", "-c", FAST_DL_SCRIPT, f["url"], str(q["dest"]), str(self.spin_conn.value())], q["folder"], env)
+                ["-s", "-c", FAST_DL_SCRIPT, f["url"], str(q["dest"]), conns], q["folder"], env)
+
+    def _dl_step_hf_cli(self, q, f, info):
+        """Загрузка через официальный hf CLI (Xet). Временная папка в папке назначения, в конце файл переносится."""
+        stage = q["folder"] / f".nd_hf_{abs(hash((str(q['dest']), time.time()))) % 10 ** 8}"
+        q["via"], q["stage"], q["hf_path"] = "cli", stage, f["hf_path"]
+        args = ["-s", "-c", HF_CLI_SHIM, "download", info["repo"], f["hf_path"], "--local-dir", str(stage)]
+        if info["revision"] and info["revision"] != "main":
+            args += ["--revision", info["revision"]]
+        if info["repo_type"] == "dataset":
+            args += ["--repo-type", "dataset"]
+        # Вывод hf идёт в канал, а не в терминал, поэтому без этих переменных он прячет прогресс:
+        # TQDM_POSITION=-1 и HF_HUB_DISABLE_PROGRESS_BARS=0 включают полосы принудительно.
+        # HF_XET_CHUNK_CACHE_SIZE_BYTES=0 — без кэша кусков Xet (иначе до 10 ГБ данных в .hf_home).
+        env = {"HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
+               "HF_HUB_DOWNLOAD_TIMEOUT": "60", "HF_HOME": str(self.root / ".hf_home"),
+               "HF_HUB_DISABLE_PROGRESS_BARS": "0", "TQDM_POSITION": "-1", "TQDM_MININTERVAL": "1",
+               "HF_XET_CHUNK_CACHE_SIZE_BYTES": "0", "PYTHONUNBUFFERED": "1", "COLUMNS": "160"}
+        tok = self.edit_hf_token.text().strip()
+        if tok:
+            env["HF_TOKEN"] = tok
+        return (f"hf download · {q['name']}", self.python_exe, args, q["folder"], env)
 
     def _dl_begin(self, q):
         q["status"] = "work"
@@ -3275,21 +3348,56 @@ class MainWindow(QMainWindow):
         if hasattr(self, "dl_bar"):
             self.dl_bar.setValue(0)
             self.lbl_dl.setText(q["name"])
+        q["t0"], q["poll_hist"] = time.time(), []
+        if q.get("via") == "cli" and q["status"] == "work":
+            self._dl_poll.start()
         self._render_dl_queue()
         return None
 
+    def _poll_hf_progress(self):
+        """Если hf не печатает прогресс, считаем его сами по размеру файлов во временной папке загрузки."""
+        q = self.dl_current
+        if not q or q.get("via") != "cli" or q.get("status") != "work" or not q.get("stage"):
+            self._dl_poll.stop()
+            return
+        now = time.time()
+        got = 0
+        try:
+            for f in Path(q["stage"]).rglob("*"):
+                if f.is_file() and f.suffix != ".lock":
+                    got += f.stat().st_size
+        except OSError:
+            return
+        hist = [h for h in (q.get("poll_hist") or []) if now - h[0] <= 8] + [(now, got)]
+        q["poll_hist"] = hist
+        speed = (got - hist[0][1]) / max(1e-3, now - hist[0][0]) if len(hist) > 1 else 0
+        bits = [q["name"]]
+        if q.get("size"):
+            pct = min(100, int(got * 100 / q["size"]))
+            self.dl_bar.setValue(pct)
+            bits.append(f"{pct}%  ({fmt_size(got)} / {fmt_size(q['size'])})")
+        elif got:
+            bits.append(fmt_size(got))
+        if speed > 0:
+            bits.append(fmt_size(speed) + tr("/с"))
+        bits.append(tr("идёт {0}", time.strftime("%M:%S" if now - q["t0"] < 3600 else "%H:%M:%S", time.gmtime(now - q["t0"]))))
+        self.lbl_dl.setText(" · ".join(bits))
+
     DL_ERRORS = {3: "Нет доступа: нужен API-токен Civitai или модель требует входа в аккаунт.",
                  4: "Файл не найден на сервере.", 5: "Ошибка сервера.", 6: "Ошибка сети — загрузка прервана.",
-                 7: "Файл скачался не полностью.", 9: "Не установлен huggingface_hub.", -1: "Не удалось запустить загрузку."}
+                 7: "Файл скачался не полностью.", 8: "Контрольная сумма не совпала: файл повреждён и удалён, попробуй скачать ещё раз.", 9: "Не установлен huggingface_hub.", -1: "Не удалось запустить загрузку."}
 
     def _dl_finish(self, q):
+        self._dl_poll.stop()
         code = self.dl_tasks.last_code
         ok = False
         if q["status"] == "error":
             pass
-        elif q["source"] == "hf":
+        elif q.get("via") == "cli":
             staged = q["stage"] / q["hf_path"]
-            if code == 0 and staged.is_file():
+            if code == 0 and staged.is_file() and q.get("size") and staged.stat().st_size != q["size"]:
+                q["error"] = tr("Файл скачался не полностью.") + f" ({fmt_size(staged.stat().st_size)} / {fmt_size(q['size'])})"
+            elif code == 0 and staged.is_file():
                 try:
                     os.replace(staged, q["dest"])
                     ok = True
@@ -3300,11 +3408,17 @@ class MainWindow(QMainWindow):
             ok = code == 0 and q["dest"].is_file()
         if ok:
             q["status"] = "done"
-            self.console.system(tr("Скачано: {0}", q["dest"]))
+            try:
+                got = q["dest"].stat().st_size
+            except OSError:
+                got = 0
+            self.console.system(tr("Скачано: {0}", f"{q['dest']} ({fmt_size(got)})"))
         else:
             q["status"] = "error"
             q.setdefault("error", tr(self.DL_ERRORS.get(code, "Ошибка загрузки (код {0})."), code))
-            if q["source"] == "hf" and code == 1:
+            if q["source"] == "hf" and code == 3:
+                q["error"] = tr("Нет доступа к файлу на Hugging Face: укажи токен, а для закрытых (gated) моделей прими условия на странице модели.")
+            if q.get("via") == "cli" and code == 1:
                 q["error"] = tr("Hugging Face вернул ошибку — проверь токен и доступ к модели (подробности в консоли).")
             self.console.system(f"{q['name']}: {q['error']}", error=True)
             self._cleanup_partial(q)
@@ -3335,6 +3449,7 @@ class MainWindow(QMainWindow):
     def cancel_downloads(self):
         if not self.dl_tasks.busy:
             return
+        self._dl_poll.stop()
         self.dl_tasks.kill(wait_ms=5000)
         for q in self.dl_queue:
             if q["status"] in ("queued", "work"):
@@ -3352,6 +3467,8 @@ class MainWindow(QMainWindow):
     def _on_dl_output(self, text):
         self.console.feed(text, "dl")
         if not hasattr(self, "dl_bar") or not self.dl_current:
+            return
+        if self.dl_current.get("via") == "cli":   # прогресс считает _poll_hf_progress, иначе строка мигает
             return
         pcts = re.findall(r"(\d{1,3})%\|", text)
         if pcts:
