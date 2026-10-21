@@ -1710,6 +1710,14 @@ def draw_icon(kind, size=20, color=None, gradient=False) -> QPixmap:
 
     if kind == "launch":
         poly((6.5, 4), (16, 10), (6.5, 16))
+    elif kind == "pause":  # две закруглённые полоски
+        p.setPen(Qt.NoPen)
+        p.setBrush(brush)
+        for x in (5, 11.6):
+            p.drawRoundedRect(QRectF(x * u, 4 * u, 3.4 * u, 12 * u), 1.1 * u, 1.1 * u)
+    elif kind == "play":  # залитый треугольник
+        p.setBrush(brush)
+        poly((6.5, 4.5), (15.5, 10), (6.5, 15.5))
     elif kind == "console":
         p.drawRoundedRect(QRectF(2.5 * u, 4 * u, 15 * u, 12 * u), 2.2 * u, 2.2 * u)
         poly((5.8, 8), (8.3, 10), (5.8, 12), close=False)
@@ -2921,7 +2929,8 @@ class MainWindow(QMainWindow):
         self.lbl_dl.setObjectName("Mono")
         self.lbl_dl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.btn_dl_cancel = button(tr("Отмена"), self.cancel_downloads, "Danger")
-        self.btn_dl_pause = button(tr("❚❚  Пауза"), self.toggle_pause_downloads)
+        self.btn_dl_pause = button(tr("Пауза"), self.toggle_pause_downloads)
+        self.btn_dl_pause.setIconSize(QSize(14, 14))
         self.btn_dl_pause.setToolTip(tr("Пауза сохраняет скачанное, «Продолжить» докачивает с того же места."))
         self.btn_dl_pause.setEnabled(False)
         prow.addWidget(self.dl_bar)
@@ -3610,7 +3619,14 @@ class MainWindow(QMainWindow):
         busy = self.dl_tasks.busy
         self.btn_dl_cancel.setEnabled(busy or self.dl_paused)
         self.btn_dl_pause.setEnabled(busy or self.dl_paused)
-        self.btn_dl_pause.setText(tr("▶  Продолжить") if self.dl_paused else tr("❚❚  Пауза"))
+        kind = "play" if self.dl_paused else "pause"
+        if getattr(self, "_dl_pause_icon", None) != kind:   # иконку перерисовываем только при смене состояния
+            ic = QIcon()
+            ic.addPixmap(draw_icon(kind, 14, C["TEXT"]), QIcon.Normal)
+            ic.addPixmap(draw_icon(kind, 14, C["DIS_TEXT"]), QIcon.Disabled)
+            self.btn_dl_pause.setIcon(ic)
+            self._dl_pause_icon = kind
+        self.btn_dl_pause.setText(tr("Продолжить") if self.dl_paused else tr("Пауза"))
         self.dl_bar.setVisible(busy or self.dl_paused or any(q["status"] != "queued" for q in self.dl_queue))
 
     # ── страница: перенос ──
