@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "ND Launcher — Model Downloads",
+  "version": "1.1.3",
+  "description": "Загрузка моделей с Hugging Face, Civitai.com, Civitai.red и ModelScope.cn через ND Launcher.",
+  "permissions": [
+    "downloads",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:17863/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_popup": "options.html",
+    "default_title": "ND Launcher",
+    "default_icon": {
+      "16": "icons/nd-16.png",
+      "32": "icons/nd-32.png",
+      "48": "icons/nd-48.png",
+      "128": "icons/nd-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/nd-16.png",
+    "32": "icons/nd-32.png",
+    "48": "icons/nd-48.png",
+    "128": "icons/nd-128.png"
+  }
+}

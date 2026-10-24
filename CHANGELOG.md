@@ -3,6 +3,24 @@
 All notable changes to ND · ComfyUI Launcher. Versions follow [Semantic Versioning](https://semver.org).
 Each version's section is used as the notes of its GitHub release.
 
+## [1.1.3] — 2026-10-24
+
+Browser model downloads, optional post-update commands, and clearer download progress.
+
+### Added
+- **Browser extension** for Hugging Face, Civitai.com, Civitai.red and ModelScope.cn. Downloads go to the launcher with the folder selected in the browser; the launcher can automatically come to the foreground.
+- Extension setup from launcher settings for Chrome, Yandex Browser, Edge and other supported Chromium browsers. The extension includes three languages, three themes and matching logo and toolbar icon colors.
+- **Post-update commands** run through the selected build’s portable Python after ComfyUI and/or custom node updates. The optional panel is collapsed by default.
+- Automatic checks for new launcher versions, with an option to disable them.
+
+### Changed
+- Model downloads now use one destination folder for all selected files. The queue shows per-file progress and speed with resizable columns.
+
+### Fixed
+- ComfyUI updates now use the build’s own batch files and finish on the stable channel, including when updating dependencies.
+- Large direct downloads start without preallocating the entire file; cancelling downloads no longer blocks the interface.
+- Generation progress stays visible between steps, and cancelling a paused download clears its progress bar.
+
 ## [1.1.2] — 2026-10-21
 
 ### Added

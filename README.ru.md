@@ -14,7 +14,11 @@
 
 </div>
 
+Лаунчер изначально разработан для сборок **Neural Dreamer** ([Patreon](https://www.patreon.com/neural_dreamer/posts/dreamer-build-171026216) · [Boosty](https://boosty.to/neural_dreamer/posts/8ab08a6b-3adc-4379-a8b9-93acc816d57d) — Dreamer Build Pro), но совместим с любой портабельной сборкой ComfyUI.
+
 Больше никаких батников и аргументов запуска по памяти. ND Launcher запускает ComfyUI с нужными настройками, обновляет его и кастом-ноды, ставит новые ноды и модели, переносит всё из старой сборки. Консоль, монитор видеокарты и воркфлоу собраны в одном месте.
+
+Расширение браузера: [установка и использование](BROWSER_EXTENSION.ru.md).
 
 ![ND Launcher](docs/screenshots/launch.png)
 

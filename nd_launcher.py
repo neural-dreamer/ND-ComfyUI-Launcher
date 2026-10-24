@@ -29,12 +29,13 @@ import subprocess
 import base64
 import hashlib
 import getpass
+import secrets
 from pathlib import Path
 
 from PySide6.QtCore import (QTranslator, QLibraryInfo, QLocale, Qt, QObject, QProcess, QProcessEnvironment, QTimer, QUrl, QRectF, QPointF, QSize,
                             QThread, Signal, QEvent)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath, QLinearGradient, QPen, QBrush, QIcon, QPixmap,
-                           QDesktopServices, QImage, QTextCursor, QTextCharFormat, QTextDocument, QGuiApplication, QPalette)
+                           QDesktopServices, QImage, QTextCursor, QTextCharFormat, QTextDocument, QGuiApplication, QPalette, QRegion)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
@@ -48,6 +49,9 @@ from PySide6.QtWidgets import (
 # Исходные строки в коде — русские; они же ключи словарей в nd_i18n.py.
 if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parent))  # python_embeded (._pth) не видит папку скрипта
+from nd_browser import BrowserServer, PORT as BROWSER_PORT
+from nd_extension_install import load_catalog, browser_spec, extension_browsers, prepare_extension
+
 try:
     from nd_i18n import TRANSLATIONS
 except Exception:
@@ -102,7 +106,7 @@ def install_qt_translator(code):
 
 
 APP_TITLE = "ND · ComfyUI Launcher"
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 DEFAULT_PORT = 8188
 BRAND_NAME = "Neural Dreamer"
 REPO_URL = "https://github.com/neural-dreamer/ND-ComfyUI-Launcher"
@@ -482,6 +486,49 @@ def http_get(url, headers=None, timeout=30):
         raise HttpError(0, str(getattr(e, "reason", e))) from None
 
 
+def launcher_version_key(value):
+    """Compare numeric release versions; ignore prereleases and unrelated tags."""
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", str(value).strip())
+    return tuple(map(int, match.groups())) if match else None
+
+
+def check_launcher_update():
+    """Read release metadata and default-branch VERSION without running remote code."""
+    api = "https://api.github.com/repos/neural-dreamer/ND-ComfyUI-Launcher"
+    current = launcher_version_key(VERSION)
+    candidates, errors = [], []
+    try:
+        data, _ = http_get(api + "/releases/latest", timeout=10)
+        release = json.loads(data)
+        version = launcher_version_key(release.get("tag_name", ""))
+        if version and not release.get("draft") and not release.get("prerelease"):
+            candidates.append((version, REPO_URL + "/releases/latest"))
+    except Exception as exc:
+        if getattr(exc, "code", None) != 404:
+            errors.append(exc)
+    # Works for repositories that publish source updates without GitHub Releases.
+    try:
+        data, _ = http_get(api + "/contents/nd_launcher.py", timeout=10)
+        content = json.loads(data)
+        if content.get("encoding") != "base64":
+            raise ValueError("Unsupported GitHub content encoding")
+        source = base64.b64decode(content["content"]).decode("utf-8-sig")
+        match = re.search(r'^VERSION\s*=\s*[\'"]([^\'"]+)[\'"]', source, re.M)
+        version = launcher_version_key(match.group(1)) if match else None
+        if version is None:
+            raise ValueError("Launcher VERSION not found")
+        candidates.append((version, REPO_URL))
+    except Exception as exc:
+        errors.append(exc)
+    newer = [item for item in candidates if current and item[0] > current]
+    if newer:
+        version, url = max(newer, key=lambda item: item[0])
+        return {"version": ".".join(map(str, version)), "url": url}
+    if errors:
+        raise errors[0]
+    return None
+
+
 def hf_resolve_url(repo, path, revision="main", repo_type="model"):
     """Прямая ссылка на файл Hugging Face (та же, что у кнопки «скачать» на сайте)."""
     import urllib.parse
@@ -692,7 +739,13 @@ FAST_DL_SCRIPT = r"""
 import os, sys, json, time, hashlib, threading, urllib.request, urllib.error, urllib.parse
 url, dest, conns = sys.argv[1], sys.argv[2], max(1, min(32, int(sys.argv[3])))
 want_sha = (sys.argv[4] if len(sys.argv) > 4 else "").strip().lower()
+if os.environ.get("ND_DL_NO_OVERWRITE") == "1" and os.path.exists(dest):
+    print("Destination already exists; not overwritten", flush=True)
+    sys.exit(10)
 token = os.environ.get("ND_DL_TOKEN", "")
+refresh_url = os.environ.get("ND_DL_REFRESH_URL", "")
+refresh_token = os.environ.get("ND_DL_REFRESH_TOKEN", "")
+fallback_url = os.environ.get("ND_DL_FALLBACK_URL", "")
 UA = "ND-Launcher"
 def fmt(n):
     for u in ("B", "KB", "MB", "GB"):
@@ -717,18 +770,31 @@ class Fatal(Exception):
 def resolve():
     # Редиректы проходим сами: после перехода на хранилище токен не отправляем, ссылка там уже подписана.
     cur, auth = url, token
+    refreshed = False
+    used_fallback = False
     for _ in range(10):
         try:
             resp = opener.open(req(cur, auth, (0, 0)), timeout=60)
             return cur, auth, resp
         except urllib.error.HTTPError as e:
+            if e.code in (401, 403) and fallback_url and not used_fallback:
+                cur, auth, used_fallback = fallback_url, "", True
+                continue
+            if e.code in (401, 403) and refresh_url and not refreshed:
+                cur, auth, refreshed = refresh_url, refresh_token, True
+                continue
             loc = e.headers.get("Location") if e.code in (301, 302, 303, 307, 308) else None
             if not loc:
                 raise Fatal(3 if e.code in (401, 403) else 4 if e.code == 404 else 5, "HTTP %d" % e.code)
+            previous = cur
             cur = urllib.parse.urljoin(cur, loc)
-            if urllib.parse.urlsplit(cur).netloc != urllib.parse.urlsplit(url).netloc:
+            if urllib.parse.urlsplit(cur).netloc != urllib.parse.urlsplit(previous).netloc:
                 auth = ""
     raise Fatal(5, "too many redirects")
+started_at = time.monotonic()
+def stage(message):
+    print("[ND-DL +%.2fs] %s" % (time.monotonic() - started_at, message), flush=True)
+stage("Resolving download URL")
 try:
     cur, auth, resp = resolve()
 except Fatal as e:
@@ -738,7 +804,12 @@ except (urllib.error.URLError, OSError) as e:
     print("network:", e, flush=True)
     sys.exit(6)
 status, cr, cl = resp.status, resp.headers.get("Content-Range", ""), resp.headers.get("Content-Length", "")
+content_type = resp.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
 resp.close()
+stage("Response received; preparing partial file")
+if os.environ.get("ND_DL_NO_OVERWRITE") == "1" and content_type in ("text/html", "application/json", "text/json"):
+    print("Server returned a page instead of a model; check access and Civitai token", flush=True)
+    sys.exit(3)
 total = cr.rsplit("/", 1)[-1]
 size = int(total) if status == 206 and total.isdigit() else (int(cl) if status == 200 and cl.isdigit() else 0)
 ranged = status == 206 and size > 0
@@ -751,8 +822,13 @@ if ranged and os.path.exists(tmp) and os.path.exists(state_path):
     try:
         with open(state_path, encoding="utf-8") as fs:
             st = json.load(fs)
-        if st.get("size") == size and st.get("chunk") == CHUNK and os.path.getsize(tmp) == size:
-            parts = {int(k): int(v) for k, v in st["parts"].items()}
+        if st.get("size") == size and st.get("chunk") == CHUNK and os.path.getsize(tmp) <= size:
+            candidate_parts = {int(k): int(v) for k, v in st["parts"].items()}
+            actual_size = os.path.getsize(tmp)
+            if (set(candidate_parts) == set(range(0, size, CHUNK)) and
+                all(start <= pos <= min(start + CHUNK, size) and
+                    (pos == start or pos <= actual_size) for start, pos in candidate_parts.items())):
+                parts = candidate_parts
     except Exception:
         parts = None
 if parts is None:
@@ -784,10 +860,33 @@ def progress():
         sys.stdout.write("\r%3d%%|%-20s| %s/%s [%s/s]" % (pct, "#" * (pct // 5), fmt(d), fmt(size) if size else "?", fmt(speed)))
         sys.stdout.flush()
 threading.Thread(target=progress, daemon=True).start()
+def prepare_random_access():
+    # Never pre-size the file: Python/CRT truncate can write zeros on Windows.
+    # Sparse mode only handles gaps between concurrently downloaded chunks.
+    with open(tmp, "a+b") as f:
+        if os.name == "nt":
+            import ctypes, msvcrt
+            from ctypes import wintypes
+            ioctl = ctypes.WinDLL("kernel32", use_last_error=True).DeviceIoControl
+            ioctl.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p,
+                              wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                              ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+            ioctl.restype = wintypes.BOOL
+            returned = wintypes.DWORD()
+            if not ioctl(msvcrt.get_osfhandle(f.fileno()), 0x900C4,
+                         None, 0, None, 0, ctypes.byref(returned), None):
+                return False
+    return True
+if ranged and not prepare_random_access():
+    print("Sparse files unavailable; using sequential download", flush=True)
+    ranged = False
+    parts = None
+    for f_ in (tmp, state_path):
+        if os.path.exists(f_):
+            os.remove(f_)
+stage("Partial file ready; mode=" + ("parallel ranges" if ranged else "sequential"))
 if ranged:
     if parts is None:
-        with open(tmp, "wb") as f:
-            f.truncate(size)
         parts = {s: s for s in range(0, size, CHUNK)}
     else:
         done[0] = sum(p - s for s, p in parts.items())
@@ -824,12 +923,16 @@ if ranged:
                             raise IOError("no range support")
                         f.seek(pos)
                         while pos <= end:
-                            b = r.read(1 << 20)
+                            b = r.read(min(1 << 20, end - pos + 1))
                             if not b:
                                 break
-                            f.write(b)
+                            written = f.write(b)
+                            if written != len(b):
+                                raise IOError("short disk write")
                             pos += len(b)
                             with lock:
+                                if done[0] == 0:
+                                    stage("First data block written")
                                 done[0] += len(b)
                                 parts[start] = pos
                     if pos <= end:
@@ -858,6 +961,8 @@ else:
                 if not b:
                     break
                 f.write(b)
+                if done[0] == 0:
+                    stage("First data block written")
                 done[0] += len(b)
     except Exception as e:
         errors.append(e)
@@ -892,7 +997,15 @@ if want_sha:
             os.remove(state_path)
         sys.exit(8)
     print("SHA-256 OK", flush=True)
-os.replace(tmp, dest)
+if os.environ.get("ND_DL_NO_OVERWRITE") == "1":
+    # On Windows rename fails atomically if another process created the target.
+    try:
+        os.rename(tmp, dest)
+    except FileExistsError:
+        print("Destination already exists; not overwritten", flush=True)
+        sys.exit(10)
+else:
+    os.replace(tmp, dest)
 if os.path.exists(state_path):
     os.remove(state_path)
 print("OK", dest, flush=True)
@@ -972,7 +1085,7 @@ def detect_browsers():
                     cmd = winreg.QueryValue(root, sub + r"\shell\open\command")
                 except OSError:
                     continue
-                m = re.match(r'\s*"([^"]+)"|\s*(\S+)', cmd or "")
+                m = re.match(r'\s*"([^"]+)"|\s*(.+?\.exe)(?:\s|$)', cmd or "", re.I)
                 exe = (m.group(1) or m.group(2)) if m else ""
                 if exe and os.path.isfile(exe) and exe.lower() not in seen:
                     seen.add(exe.lower())
@@ -989,6 +1102,58 @@ def browser_args(exe, url, app_mode=False):
         return ["-new-tab", url]
     return [url]
 
+
+
+def parse_post_update_commands(text):
+    """One Windows-style Python invocation per line; no shell expansion."""
+    commands = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        args, word, quoted, started, i = [], [], False, False, 0
+        while i < len(line):
+            char = line[i]
+            if char in ' 	' and not quoted:
+                if started:
+                    args.append(''.join(word)); word, started = [], False
+                i += 1
+                continue
+            if char == '\\':
+                end = i
+                while end < len(line) and line[end] == '\\':
+                    end += 1
+                count = end - i
+                if end < len(line) and line[end] == '"':
+                    word.extend('\\' * (count // 2))
+                    if count % 2:
+                        word.append('"'); i = end + 1
+                    else:
+                        i = end
+                else:
+                    word.extend('\\' * count); i = end
+                started = True
+                continue
+            if char == '"':
+                if quoted and i + 1 < len(line) and line[i + 1] == '"':
+                    word.append('"'); i += 2
+                else:
+                    quoted = not quoted; i += 1
+                started = True
+                continue
+            word.append(char); started = True; i += 1
+        if quoted:
+            raise ValueError(tr('Строка {0}: не закрыты двойные кавычки.', number))
+        if started:
+            args.append(''.join(word))
+        if args and re.split(r'[\\/]', args[0])[-1].lower() in ('python', 'python.exe', 'python3', 'python3.exe'):
+            args.pop(0)
+        if args and args[0].lower() in ('pip', 'pip.exe'):
+            args[:1] = ['-m', 'pip']
+        if not args or args in (['-m'], ['-c']):
+            raise ValueError(tr('Строка {0}: укажи аргументы Python или путь к скрипту.', number))
+        commands.append((number, args))
+    return commands
 
 
 def fmt_size(n):
@@ -1013,6 +1178,9 @@ CUSTOM = "Свой"
 
 DEFAULT_CONFIG = dict(
     root="", preset="Стандарт", options=dict(DEFAULT_OPTIONS), listen=False, port=DEFAULT_PORT,
+    browser_capture=False, browser_pairing_key="", browser_show_downloads=True,
+    check_launcher_updates=True,
+    post_update_enabled=False, post_update_commands="", post_update_comfy=True, post_update_nodes=False,
     auto_browser=True, extra_args="", user_presets={}, deps_after_nodes_update=True,
     transfer_source="", transfer_policy="skip", transfer_models_mode="copy", transfer_node_deps=True, transfer_gentle=True,
     transfer_input_mode="copy", transfer_output_mode="copy",
@@ -1840,6 +2008,49 @@ def reveal_in_explorer(path: Path):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent if path.is_file() else path)))
 
 
+def raise_window_windows(hwnd, ensure_visible=False):
+    """Use pointer-sized HWNDs; a handoff may briefly lift the window above the browser.
+
+    Do not attach input queues or modify Windows foreground-lock settings.
+    Return a cleanup callback only if we temporarily enabled topmost ourselves.
+    """
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    signatures = {
+        "IsWindow": ([wintypes.HWND], wintypes.BOOL),
+        "IsIconic": ([wintypes.HWND], wintypes.BOOL),
+        "ShowWindow": ([wintypes.HWND, ctypes.c_int], wintypes.BOOL),
+        "SetForegroundWindow": ([wintypes.HWND], wintypes.BOOL),
+        "GetWindowLongW": ([wintypes.HWND, ctypes.c_int], wintypes.LONG),
+        "SetWindowPos": ([wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                          ctypes.c_int, ctypes.c_int, wintypes.UINT], wintypes.BOOL),
+    }
+    for name, (args, result) in signatures.items():
+        fn = getattr(user32, name)
+        fn.argtypes, fn.restype = args, result
+    if not user32.IsWindow(hwnd):
+        return None
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE only for minimized windows
+    user32.SetForegroundWindow(hwnd)
+    if not ensure_visible or user32.GetWindowLongW(hwnd, -20) & 0x00000008:
+        return None  # respect a window that was already topmost
+    flags = 0x0001 | 0x0002 | 0x0010 | 0x0200  # keep size, position, focus and owner order
+    if not user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags):  # HWND_TOPMOST
+        return None
+    def release():
+        # Also demote a hidden window, so restoring from the tray cannot leave it pinned.
+        if user32.IsWindow(hwnd):
+            user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST
+    try:
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        release()
+        raise
+    return release
+
+
 # ─────────────────────────────────── консоль ──────────────────────────────────
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -1906,17 +2117,20 @@ class Console(QPlainTextEdit):
                 segs = [s for s in ln.split("\r") if s.strip()]
                 ln = segs[-1] if segs else ""
             m = PROGRESS_RE.search(ln)
-            if m:
+            if m and source == "comfy":
                 self.progress.emit(int(m.group(1)), ln.strip())
             self.append_line(ln)
             self.line_received.emit(ln, source)
+        # QProcess may split a tqdm line after its carriage return. Inspect the
+        # accumulated tail on every read, not only chunks containing a new CR.
+        tail = rest
         if "\r" in rest:
-            segs = [s for s in rest.split("\r") if s.strip()]
-            last = segs[-1] if segs else ""
-            m = PROGRESS_RE.search(last)
-            if m:
-                self.progress.emit(int(m.group(1)), last.strip())
-            rest = rest.split("\r")[-1]
+            segments = [segment for segment in rest.split("\r") if segment.strip()]
+            tail = segments[-1] if segments else ""
+            rest = rest.rsplit("\r", 1)[-1]
+        m = PROGRESS_RE.search(tail)
+        if m and source == "comfy":
+            self.progress.emit(int(m.group(1)), tail.strip())
         self._buf[source] = rest
 
     def clear_all(self):
@@ -2019,6 +2233,26 @@ class TaskRunner(QObject):
             self.proc.kill()
             if wait_ms:  # пока процесс жив, Windows не даёт удалить открытые им файлы
                 self.proc.waitForFinished(wait_ms)
+
+
+class RoundedDownloadHeader(QHeaderView):
+    """Clip at the visible table edge, even when the last section is off-screen."""
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._clip_corners()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._clip_corners()
+
+    def _clip_corners(self):
+        radius = float(C["R_LG"].replace("px", ""))
+        rect = QRectF(self.rect())
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        bottom = QPainterPath()
+        bottom.addRect(QRectF(0, radius, rect.width(), max(0, rect.height() - radius)))
+        self.setMask(QRegion(path.united(bottom).toFillPolygon().toPolygon()))
 
 
 class NoWheelComboBox(QComboBox):
@@ -2226,6 +2460,10 @@ class Card(QPushButton):
 
 # ─────────────────────────────── главное окно ─────────────────────────────────
 
+class BrowserRequests(QObject):
+    request = Signal(object)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, cli=None):
         super().__init__()
@@ -2262,6 +2500,14 @@ class MainWindow(QMainWindow):
         self._dl_poll.setInterval(1000)
         self._dl_poll.timeout.connect(self._poll_hf_progress)
         self._fetch_seq = 0
+        self._browser_server = None
+        self._browser_reservations = {}
+        self._browser_committed = {}
+        self._browser_requests = BrowserRequests(self)
+        self._browser_requests.request.connect(self._on_browser_request)
+        self._generation_progress = None
+        self._launcher_update = None
+        self._launcher_update_pending = False
         self._bridge = _Bridge()
         self._bridge.done.connect(self._on_bridge)
         self.setWindowTitle(APP_TITLE)
@@ -2290,6 +2536,9 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         if cli["profile"]:
             self.apply_profile(cli["profile"])
+        QTimer.singleShot(1000, self._check_launcher_update)
+        QTimer.singleShot(500, self._start_browser_bridge)
+        QApplication.instance().aboutToQuit.connect(self._stop_browser_bridge)
 
     # ── paths ──
     @property
@@ -2440,6 +2689,15 @@ class MainWindow(QMainWindow):
             lay.addWidget(b)
         self.nav_buttons["launch"].setChecked(True)
         lay.addStretch()
+
+        self.lbl_launcher_update = QLabel()
+        self.lbl_launcher_update.setWordWrap(True)
+        self.lbl_launcher_update.setTextFormat(Qt.RichText)
+        self.lbl_launcher_update.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.lbl_launcher_update.setOpenExternalLinks(True)
+        self.lbl_launcher_update.setCursor(Qt.PointingHandCursor)
+        lay.addWidget(self.lbl_launcher_update)
+        self._render_launcher_update()
 
         self.btn_start = button(tr('▶   ЗАПУСТИТЬ'), self.start_comfy, "Primary")
         self.btn_start.setCursor(Qt.PointingHandCursor)
@@ -2633,7 +2891,12 @@ class MainWindow(QMainWindow):
             self.console.progress.connect(self._on_progress)
             self._progress_hide = QTimer(self)
             self._progress_hide.setSingleShot(True)
-            self._progress_hide.timeout.connect(lambda: (self.pbar.hide(), self.lbl_progress.setText("")))
+            self._progress_hide.timeout.connect(self._clear_generation_progress)
+        if self._generation_progress is not None:
+            pct, text = self._generation_progress
+            self.pbar.setValue(pct)
+            self.lbl_progress.setText(text[-80:])
+            self.pbar.show()
         lay.addWidget(self.console, 1)
         return page
 
@@ -2691,13 +2954,50 @@ class MainWindow(QMainWindow):
         page, lay = self._new_page(tr('Обновления'), tr('Обновляй ComfyUI и кастом-ноды в один клик. Перед обновлением останови ComfyUI.'))
 
         cp, cpl = panel("ComfyUI")
-        cpl.addWidget(muted(tr('Использует штатный апдейтер портативной сборки (update/update.py). Вариант «+ зависимости» дополнительно ставит пакеты из requirements.txt — нужен, когда после обновления ругается на фронтенд или новые модули.')))
+        cpl.addWidget(muted(tr('«Обновить ComfyUI» запускает update_comfyui_stable.bat. «ComfyUI + зависимости» запускает update_comfyui_and_python_dependencies.bat вашей сборки, включая обновление PyTorch. Канал ComfyUI и источники пакетов определяются соответствующим батником.')))
         row = QHBoxLayout()
         row.addWidget(button(tr('⟳  Обновить ComfyUI'), lambda: self.update_comfy(False)))
         row.addWidget(button(tr('⟳  ComfyUI + зависимости'), lambda: self.update_comfy(True)))
         row.addStretch()
         cpl.addLayout(row)
         lay.addWidget(cp)
+
+        pp, ppl = panel()
+        self.btn_post_commands = button("▸  " + tr("Команды после обновления"))
+        self.btn_post_commands.setObjectName("Collapse")
+        self.btn_post_commands.setCheckable(True)
+        ppl.addWidget(self.btn_post_commands)
+        self.post_commands_body = QWidget()
+        post_layout = QVBoxLayout(self.post_commands_body)
+        post_layout.setContentsMargins(0, 0, 0, 0)
+        self.chk_post_commands = QCheckBox(tr("Выполнять команды после успешного обновления"))
+        self.chk_post_commands.setChecked(bool(self.cfg.get("post_update_enabled", False)))
+        self.chk_post_commands.toggled.connect(lambda value: self._set_cfg("post_update_enabled", value))
+        post_layout.addWidget(self.chk_post_commands)
+        scopes = QHBoxLayout()
+        for key, label, default in (("post_update_comfy", "После обновления ComfyUI", True),
+                                    ("post_update_nodes", "После обновления кастом-нод", False)):
+            check = QCheckBox(tr(label))
+            check.setChecked(bool(self.cfg.get(key, default)))
+            check.toggled.connect(lambda value, key=key: self._set_cfg(key, value))
+            scopes.addWidget(check)
+        scopes.addStretch()
+        post_layout.addLayout(scopes)
+        post_layout.addWidget(muted(tr("Одна команда на строку. Используется portable Python выбранной сборки; рабочая папка — корень сборки. Можно писать аргументы Python, python.exe или pip. Для путей с пробелами используй двойные кавычки. Команды оболочки (&&, перенаправления, .bat) не выполняются."), True))
+        self.edit_post_commands = QPlainTextEdit()
+        self.edit_post_commands.setMinimumHeight(130)
+        self.edit_post_commands.setPlaceholderText('-m pip install --upgrade package_name\n-m pip install -r "ComfyUI/requirements.txt"\n# Комментарий')
+        self.edit_post_commands.setPlainText(self.cfg.get("post_update_commands", ""))
+        self.edit_post_commands.textChanged.connect(lambda: self._set_cfg("post_update_commands", self.edit_post_commands.toPlainText()))
+        post_layout.addWidget(self.edit_post_commands)
+        post_layout.addWidget(muted(tr("При ошибке обновления команды пропускаются. При ошибке команды оставшиеся не выполняются. Вывод отображается в консоли."), True))
+        ppl.addWidget(self.post_commands_body)
+        self.post_commands_body.hide()
+        def toggle_commands(on):
+            self.post_commands_body.setVisible(on)
+            self.btn_post_commands.setText(("▾  " if on else "▸  ") + tr("Команды после обновления"))
+        self.btn_post_commands.toggled.connect(toggle_commands)
+        lay.addWidget(pp)
 
         np_, npl = panel(tr('Кастом-ноды'))
         top = QHBoxLayout()
@@ -2874,25 +3174,22 @@ class MainWindow(QMainWindow):
         rrow.addWidget(button(tr("↻  Обновить"), self._reload_roots))
         fl.addLayout(rrow)
         self.tree_files = QTreeWidget()
-        self.tree_files.setHeaderLabels([tr("Файл"), tr("Размер"), tr("Папка назначения")])
+        self.tree_files.setHeaderLabels([tr("Файл"), tr("Размер")])
         self.tree_files.setRootIsDecorated(False)
         self.tree_files.setAlternatingRowColors(True)
         self.tree_files.setMinimumHeight(200)
         h = self.tree_files.header()
         h.setSectionResizeMode(0, QHeaderView.Stretch)
         h.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        h.setSectionResizeMode(2, QHeaderView.Interactive)
-        h.resizeSection(2, 230)
         self.tree_files.itemChanged.connect(lambda *_: self._update_dl_summary())
         fl.addWidget(self.tree_files, 1)
         drow = QHBoxLayout()
-        drow.addWidget(muted(tr("Назначить для всех (отмеченных):"), False))
+        drow.addWidget(muted(tr("Папка для всех отмеченных файлов:"), False))
         last = self.cfg.get("dl_last_folder") or "checkpoints"
         self.cb_dl_folder = self._folder_combo(key=None if os.path.isabs(last) else last,
                                                path=last if os.path.isabs(last) else None)
-        self.cb_dl_folder.currentIndexChanged.connect(lambda _: self._update_dl_summary())
+        self.cb_dl_folder.currentIndexChanged.connect(self._on_common_folder_changed)
         drow.addWidget(self.cb_dl_folder, 1)
-        drow.addWidget(button(tr("Назначить отмеченным"), self._assign_folder))
         fl.addLayout(drow)
         self.lbl_space = QLabel()
         self.lbl_space.setWordWrap(True)
@@ -2940,14 +3237,18 @@ class MainWindow(QMainWindow):
         prow.addWidget(self.btn_dl_cancel)
         ql.addLayout(prow)
         self.tree_dl = QTreeWidget()
-        self.tree_dl.setHeaderLabels([tr("Файл"), tr("Куда"), tr("Статус")])
+        self.tree_dl.setHeader(RoundedDownloadHeader(Qt.Horizontal, self.tree_dl))
+        self.tree_dl.setHeaderLabels([tr("Файл"), tr("Куда"), tr("Статус"), tr("Прогресс"), tr("Скорость")])
         self.tree_dl.setRootIsDecorated(False)
         self.tree_dl.setAlternatingRowColors(True)
         self.tree_dl.setMinimumHeight(130)
         h = self.tree_dl.header()
-        h.setSectionResizeMode(0, QHeaderView.Stretch)
-        h.setSectionResizeMode(1, QHeaderView.Stretch)
-        h.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        h.setStretchLastSection(True)
+        h.setMinimumSectionSize(60)
+        h.setSectionResizeMode(QHeaderView.Interactive)
+        for column, width in enumerate(getattr(self, "_dl_column_widths", [240, 160, 120, 190, 110])):
+            h.resizeSection(column, width)
+        h.sectionResized.connect(self._remember_dl_column_width)
         self.tree_dl.itemDoubleClicked.connect(lambda it, _c: it.data(0, Qt.UserRole) and reveal_in_explorer(Path(it.data(0, Qt.UserRole))))
         ql.addWidget(self.tree_dl)
         lay.addWidget(qp)
@@ -3006,14 +3307,8 @@ class MainWindow(QMainWindow):
 
     def _on_root_changed(self, *_):
         self._set_cfg("dl_root", self.cb_dl_root.currentData() or "")
-        for v in (self.model_info or {}).get("versions", []):
-            for f in v["files"]:
-                f["custom"] = None  # ручной выбор относился к старому корню
         self._fill_folder_combo(self.cb_dl_folder, key=self._last_folder_key())
-        if self.model_info:
-            self._show_version_files()
-        else:
-            self._update_dl_summary()
+        self._on_common_folder_changed()
 
     def _current_root_folders(self):
         """[(ключ, абсолютный путь)] для выбранного корня."""
@@ -3033,10 +3328,8 @@ class MainWindow(QMainWindow):
         v = self.cfg.get("dl_last_folder") or "checkpoints"
         return None if os.path.isabs(v) else v
 
-    def _folder_combo(self, key=None, path=None, cell=False):
+    def _folder_combo(self, key=None, path=None):
         cb = NoWheelComboBox()
-        if cell:
-            cb.setObjectName("CellCombo")
         self._compact_combo(cb, 14)
         cb.activated.connect(lambda i, c=cb: self._on_folder_activated(c, i))
         self._fill_folder_combo(cb, key=key or (None if path else self._last_folder_key()), path=path)
@@ -3049,7 +3342,17 @@ class MainWindow(QMainWindow):
         cb.clear()
         cb.addItem(tr("Другая папка…"), "__browse__")
         cb.insertSeparator(1)
+        for pth in self.cfg.get("dl_custom_folders") or []:
+            if cb.findData(pth) < 0:
+                cb.addItem(pth, pth)
+                cb.setItemData(cb.count() - 1, pth, Qt.ToolTipRole)
+        if cb.count() > 2:
+            cb.insertSeparator(cb.count())
         for k, pth in folders:
+            existing = cb.findData(pth)
+            if existing >= 0:
+                cb.setItemData(existing, k, Qt.UserRole + 1)
+                continue
             if external:
                 label = k if sum(1 for x, _ in folders if x == k) == 1 else f"{k} · {Path(pth).name}"
             else:
@@ -3057,10 +3360,6 @@ class MainWindow(QMainWindow):
             cb.addItem(label, pth)
             cb.setItemData(cb.count() - 1, k, Qt.UserRole + 1)
             cb.setItemData(cb.count() - 1, pth, Qt.ToolTipRole)
-        for pth in self.cfg.get("dl_custom_folders") or []:
-            if cb.findData(pth) < 0:
-                cb.addItem(pth, pth)
-                cb.setItemData(cb.count() - 1, pth, Qt.ToolTipRole)
         self._select_folder(cb, key=key, path=path)
         cb.blockSignals(False)
 
@@ -3096,13 +3395,9 @@ class MainWindow(QMainWindow):
         if known < 0:
             lst = [x for x in (self.cfg.get("dl_custom_folders") or []) if x != d]
             self._set_cfg("dl_custom_folders", ([d] + lst)[:6])
-        self._select_folder(cb, path=d)
+        self._fill_folder_combo(cb, path=d)
+        self._on_common_folder_changed()
         self._update_dl_summary()
-
-    @staticmethod
-    def _row_combo(tree, it):
-        w = tree.itemWidget(it, 2)
-        return getattr(w, "combo", None)
 
     # ── загрузка моделей: поиск файлов ──
     def fetch_model_info(self):
@@ -3123,7 +3418,256 @@ class MainWindow(QMainWindow):
             tok = self.edit_civ_token.text().strip()
             run_in_thread(self._bridge, ("fetch", seq, "civitai"), lambda: civitai_fetch(info, tok))
 
+    def _browser_key(self):
+        key = self.cfg.get("browser_pairing_key") or ""
+        if len(key) < 32:
+            key = secrets.token_urlsafe(32)
+            self._set_cfg("browser_pairing_key", key)
+        return key
+
+    def _install_chrome_extension(self):
+        base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        source = base / "chrome_extension"
+        try:
+            catalog = load_catalog(source)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, APP_TITLE, str(exc))
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("Расширение для браузера"))
+        dlg.setMinimumWidth(620)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(muted(tr("Выбери браузер для установки расширения. Браузер ComfyUI не изменится."), True))
+        combo = QComboBox()
+        combo.setMinimumContentsLength(28)
+        preferred = self.cfg.get("extension_browser") or self.cfg.get("browser") or ""
+        rows = extension_browsers(detect_browsers(), preferred, catalog)
+        def add_browser(label, exe, url):
+            combo.addItem(label, (exe, url))
+            combo.setItemData(combo.count() - 1, exe, Qt.ToolTipRole)
+        for label, exe, url in rows:
+            add_browser(label, exe, url)
+        for index in range(combo.count()):
+            if os.path.normcase(combo.itemData(index)[0]) == os.path.normcase(preferred):
+                combo.setCurrentIndex(index)
+                break
+        row = QHBoxLayout()
+        row.addWidget(combo, 1)
+        def browse():
+            exe, _ = QFileDialog.getOpenFileName(dlg, tr("Выбрать браузер"), "", "*.exe")
+            if not exe:
+                return
+            spec = browser_spec(exe, "", catalog)
+            if not spec:
+                QMessageBox.information(dlg, APP_TITLE, tr("Выбери поддерживаемый Chromium-браузер: Chrome, Edge, Яндекс, Brave, Opera, Vivaldi, Chromium или Thorium."))
+                return
+            index = next((i for i in range(combo.count()) if os.path.normcase(combo.itemData(i)[0]) == os.path.normcase(exe)), -1)
+            if index < 0:
+                add_browser(spec['name'], exe, spec['url'])
+                index = combo.count() - 1
+            combo.setCurrentIndex(index)
+        row.addWidget(button(tr("Обзор…"), browse))
+        layout.addLayout(row)
+        if not rows:
+            layout.addWidget(muted(tr("Поддерживаемые браузеры не найдены. Укажи установленный или portable-браузер через «Обзор…»."), True))
+        instructions = QLabel(tr("Лаунчер подготовит расширение и откроет Проводник с выделенной папкой. Её можно перетащить на страницу расширений, если браузер это поддерживает, или выбрать через «Загрузить распакованное расширение»."))
+        instructions.setWordWrap(True)
+        instructions.setMinimumHeight(100)
+        instructions.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(instructions)
+        target_edit = QLineEdit()
+        target_edit.setReadOnly(True)
+        target_edit.hide()
+        layout.addWidget(target_edit)
+        def copy_path():
+            QGuiApplication.clipboard().setText(target_edit.text())
+        def install():
+            selected = combo.currentData()
+            if not selected:
+                return
+            exe, url = selected
+            try:
+                if not Path(exe).is_file():
+                    raise FileNotFoundError(exe)
+                target = prepare_extension(source, os.environ.get("LOCALAPPDATA"))
+                target_edit.setText(str(target))
+                target_edit.show()
+                copy_path()
+                # Select the folder itself so it can be dragged into the browser.
+                reveal_in_explorer(target)
+                self._set_cfg("extension_browser", exe)
+                instructions.setText(tr("Папка расширения выделена в Проводнике, путь скопирован. Открой {0} в выбранном браузере. Перетащи туда папку или включи режим разработчика и выбери «Загрузить распакованное расширение». Затем вставь ключ подключения.", url))
+                copy_btn.setEnabled(True)
+            except (OSError, ValueError) as exc:
+                instructions.setText(tr("Не удалось подготовить расширение: {0}", exc))
+        buttons = QHBoxLayout()
+        install_btn = button(tr("Подготовить и открыть папку"), install, "Accent")
+        install_btn.setEnabled(combo.count() > 0)
+        combo.currentIndexChanged.connect(lambda _: install_btn.setEnabled(combo.currentData() is not None))
+        layout.addWidget(install_btn)
+        copy_btn = button(tr("Скопировать путь"), copy_path)
+        copy_btn.setEnabled(False)
+        buttons.addWidget(copy_btn)
+        buttons.addWidget(button(tr("Скопировать ключ подключения"), self._copy_browser_key))
+        layout.addLayout(buttons)
+        dlg.exec()
+
+    def _copy_browser_key(self):
+        QGuiApplication.clipboard().setText(self._browser_key())
+        self.console.system(tr('Ключ подключения к браузеру скопирован.'))
+
+    def _render_browser_bridge_status(self):
+        if not hasattr(self, "lbl_browser_capture"):
+            return
+        if self._browser_server:
+            text = tr('Подключение активно: 127.0.0.1:{0}', BROWSER_PORT)
+        elif self.cfg.get("browser_capture"):
+            text = tr('Подключение не запущено — подробности в консоли.')
+        else:
+            text = tr('Приём загрузок из браузера выключен.')
+        self.lbl_browser_capture.setText(text)
+
+    def _start_browser_bridge(self):
+        if self.cfg.get("browser_capture") and self._browser_server is None:
+            try:
+                self._browser_server = BrowserServer(self._browser_key(), self._browser_requests.request.emit)
+            except Exception as exc:
+                self.console.system(tr('Не удалось включить приём загрузок браузера: {0}', exc), error=True)
+        self._render_browser_bridge_status()
+
+    def _stop_browser_bridge(self):
+        if self._browser_server:
+            self._browser_server.close()
+            self._browser_server = None
+        self._browser_reservations.clear()
+        self._render_browser_bridge_status()
+
+    def _on_browser_capture_toggled(self, enabled):
+        self._set_cfg("browser_capture", bool(enabled))
+        if enabled:
+            self._start_browser_bridge()
+        else:
+            self._stop_browser_bridge()
+
+    def _check_browser_destination(self, data):
+        if self._downloads_stopping():
+            raise ValueError(tr("Завершается остановка загрузки. Повтори через несколько секунд."))
+        dest = Path(data["filename"])
+        if dest.exists():
+            raise ValueError(tr('Файл назначения уже существует; загрузка остаётся в браузере.'))
+        if not dest.parent.is_dir():
+            raise ValueError(tr('Папка назначения недоступна.'))
+        target = os.path.normcase(str(dest))
+        if any(os.path.normcase(str(q["dest"])) == target and q["status"] not in ("done", "error", "cancelled")
+               for q in self.dl_queue):
+            raise ValueError(tr('Этот файл уже есть в очереди загрузок.'))
+        return dest
+
+    def _on_browser_request(self, envelope):
+        try:
+            if time.monotonic() > envelope["deadline"]:
+                raise ValueError("Request timed out; retry")
+            if not self.cfg.get("browser_capture") or not self._browser_server:
+                raise ValueError(tr('Приём загрузок из браузера выключен.'))
+            if sys.platform != "win32" or not self.root or not self.python_exe.is_file():
+                raise ValueError(tr('Для приёма загрузки выбери портативную сборку ComfyUI на Windows.'))
+            action, data = envelope["action"], envelope["data"]
+            if action == "ping":
+                result = {"ok": True, "version": VERSION}
+            else:
+                request_id = data.get("request_id")
+                if not isinstance(request_id, str):
+                    raise ValueError("Invalid request ID")
+                now = time.monotonic()
+                self._browser_reservations = {k: v for k, v in self._browser_reservations.items() if v[0] > now}
+                accepted = self._browser_committed.get(request_id)
+                if accepted is not None:
+                    if action == "prepare" and data != accepted:
+                        raise ValueError("Request ID already used")
+                    result = {"ok": True, "accepted": True}
+                elif action == "prepare":
+                    dest = self._check_browser_destination(data)
+                    target = os.path.normcase(str(dest))
+                    if any(k != request_id and os.path.normcase(v[1]["filename"]) == target
+                           for k, v in self._browser_reservations.items()):
+                        raise ValueError(tr('Этот файл уже есть в очереди загрузок.'))
+                    old = self._browser_reservations.get(request_id)
+                    if old and old[1] != data:
+                        raise ValueError("Request ID already used")
+                    if len(self._browser_reservations) >= 256 and not old:
+                        raise ValueError("Too many pending transfers")
+                    self._browser_reservations[request_id] = (now + 120, data)
+                    result = {"ok": True, "prepared": True}
+                elif action == "commit":
+                    reservation = self._browser_reservations.get(request_id)
+                    if not reservation:
+                        raise ValueError("Reservation expired; prepare again")
+                    payload = reservation[1]
+                    dest = self._check_browser_destination(payload)
+                    q = dict(name=dest.name, dest=dest, folder=dest.parent, size=payload["total_bytes"],
+                             status="queued", source="browser", info={"source": "browser"},
+                             f={"url": payload["final_url"], "original_url": payload["url"]})
+                    steps = self._dl_steps(q)
+                    self.dl_queue.append(q)
+                    self._browser_committed[request_id] = payload
+                    del self._browser_reservations[request_id]
+                    if self.dl_paused:
+                        pass  # resume_downloads will construct the steps later
+                    elif self.dl_tasks.busy:
+                        self.dl_tasks.extend(steps)
+                    else:
+                        self.dl_tasks.run(tr("Загрузка из браузера"), steps)
+                    self._render_dl_queue()
+                    self.update_controls()
+                    self.console.system(tr('Загрузка из браузера принята: {0}', dest.name))
+                    if self.cfg.get("browser_show_downloads", True):
+                        self.go("models")
+                        self.bring_to_front(browser_handoff=True)
+                    result = {"ok": True, "accepted": True}
+                else:
+                    raise ValueError("Unknown action")
+            envelope["result"] = result
+        except Exception as exc:
+            envelope["result"] = {"ok": False, "error": str(exc)}
+        finally:
+            envelope["done"].set()
+
+    def _on_launcher_updates_toggled(self, enabled):
+        self._set_cfg("check_launcher_updates", bool(enabled))
+        if not enabled:
+            self._launcher_update = None
+        self._render_launcher_update()
+        if enabled:
+            self._check_launcher_update()
+
+    def _check_launcher_update(self):
+        if not self.cfg.get("check_launcher_updates", True) or self._launcher_update_pending:
+            return
+        self._launcher_update_pending = True
+        run_in_thread(self._bridge, "launcher_update", check_launcher_update)
+
+    def _render_launcher_update(self):
+        info = self._launcher_update if self.cfg.get("check_launcher_updates", True) else None
+        self.lbl_launcher_update.setVisible(bool(info))
+        if info:
+            text = html.escape(tr('Доступна новая версия лаунчера: {0}', info["version"]))
+            self.lbl_launcher_update.setText(
+                f'<a href="{html.escape(info["url"], quote=True)}" '
+                f'style="color:{C["CYAN"]}; text-decoration:underline;">{text}</a>')
+            self.lbl_launcher_update.setToolTip(tr('Открыть страницу обновления лаунчера'))
+
     def _on_bridge(self, tag, result, error):
+        if tag == "launcher_update":
+            self._launcher_update_pending = False
+            # A request already in flight may finish after the checkbox is cleared.
+            if not self.cfg.get("check_launcher_updates", True):
+                return
+            if error is not None:
+                self.console.system(tr('Не удалось проверить обновление лаунчера: {0}', error))
+            else:
+                self._launcher_update = result
+                self._render_launcher_update()
+            return
         if not (isinstance(tag, tuple) and tag[0] == "fetch") or tag[1] != self._fetch_seq:
             return
         self.btn_fetch.setEnabled(True)
@@ -3186,26 +3730,14 @@ class MainWindow(QMainWindow):
     def _show_version_files(self):
         self.tree_files.blockSignals(True)
         self.tree_files.clear()
-        default_key = self.cb_dl_folder.currentData(Qt.UserRole + 1)
         for i, f in enumerate(self._current_files()):
             label = f["name"] + (f"   ({f['note']})" if f.get("note") else "")
-            it = QTreeWidgetItem([label, fmt_size(f["size"]) if f["size"] else "—", ""])
+            it = QTreeWidgetItem([label, fmt_size(f["size"]) if f["size"] else "—"])
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(0, Qt.Checked if f.get("checked") else Qt.Unchecked)
             it.setData(0, Qt.UserRole, i)
             it.setToolTip(0, f["name"])
             self.tree_files.addTopLevelItem(it)
-            cb = self._folder_combo(key=f.get("folder") or default_key, path=f.get("custom"), cell=True)
-            cb.currentIndexChanged.connect(lambda _=0: self._update_dl_summary())
-            holder = QWidget()
-            holder.setObjectName("CellHolder")
-            holder.setAttribute(Qt.WA_StyledBackground, True)
-            hl = QHBoxLayout(holder)
-            hl.setContentsMargins(2, 3, 6, 3)
-            hl.addWidget(cb)
-            holder.combo = cb
-            it.setSizeHint(0, QSize(0, max(34, cb.sizeHint().height() + 8)))
-            self.tree_files.setItemWidget(it, 2, holder)
         self.tree_files.blockSignals(False)
         self._filter_files(self.edit_file_filter.text())
 
@@ -3225,33 +3757,20 @@ class MainWindow(QMainWindow):
         self.tree_files.blockSignals(False)
         self._update_dl_summary()
 
-    def _assign_folder(self):
+    def _on_common_folder_changed(self, *_):
         path = self.cb_dl_folder.currentData()
-        if not path or path == "__browse__":
-            return
-        self._set_cfg("dl_last_folder", self.cb_dl_folder.currentData(Qt.UserRole + 1) or path)
-        for i in range(self.tree_files.topLevelItemCount()):
-            it = self.tree_files.topLevelItem(i)
-            cb = self._row_combo(self.tree_files, it)
-            if cb and it.checkState(0) == Qt.Checked:
-                cb.blockSignals(True)
-                self._select_folder(cb, path=path)
-                cb.blockSignals(False)
+        if path and path != "__browse__":
+            self._set_cfg("dl_last_folder", self.cb_dl_folder.currentData(Qt.UserRole + 1) or path)
+            self.cb_dl_folder.setToolTip(str(path))
         self._update_dl_summary()
 
     def _checked_rows(self):
         files = self._current_files()
         out = []
+        value = self.cb_dl_folder.currentData()
         for i in range(self.tree_files.topLevelItemCount()):
             it = self.tree_files.topLevelItem(i)
-            idx = it.data(0, Qt.UserRole)
-            cb = self._row_combo(self.tree_files, it)
-            f = files[idx]
-            value = cb.currentData() if cb else None
-            if value and value != "__browse__":
-                # ручной выбор запоминаем отдельно — переживёт смену темы/языка; подсказка остаётся в f["folder"]
-                key = cb.currentData(Qt.UserRole + 1)
-                f["custom"] = None if key and key in (f.get("folder"),) + FOLDER_ALIASES.get(f.get("folder") or "", ()) else value
+            f = files[it.data(0, Qt.UserRole)]
             f["checked"] = it.checkState(0) == Qt.Checked
             if f["checked"] and value and value != "__browse__":
                 out.append((f, Path(value)))
@@ -3292,6 +3811,9 @@ class MainWindow(QMainWindow):
 
     # ── загрузка моделей: очередь ──
     def start_downloads(self):
+        if self._downloads_stopping():
+            self.console.system(tr("Завершается остановка загрузки. Повтори через несколько секунд."))
+            return
         if not self.root:
             QMessageBox.warning(self, APP_TITLE, tr('Сначала укажи папку сборки ComfyUI в настройках.'))
             return
@@ -3358,24 +3880,49 @@ class MainWindow(QMainWindow):
         return [lambda q=q: self._dl_begin(q), self._dl_step(q, q["f"], q["info"]), lambda q=q: self._dl_finish(q)]
 
     def _dl_step(self, q, f, info):
-        conns = str(self.spin_conn.value())
-        if info["source"] == "hf" and self.chk_hf_cli.isChecked():
+        # All direct downloads share one command, script, chunk size and connection count.
+        # Only source URL, credentials, optional hash and overwrite policy differ.
+        source = info["source"]
+        sha = f.get("sha256") or ""
+        if source == "browser":
+            from urllib.parse import urlsplit
+            civ_hosts = {"civitai.red", "www.civitai.red", "civitai.com", "www.civitai.com"}
+            hf_hosts = {"huggingface.co", "www.huggingface.co"}
+            ms_hosts = {"modelscope.cn", "www.modelscope.cn"}
+            def host_token(host):
+                if host in civ_hosts:
+                    return self.edit_civ_token.text().strip()
+                if host in hf_hosts:
+                    return self.edit_hf_token.text().strip()
+                return ""
+            original = f.get("original_url", "")
+            parsed = urlsplit(original)
+            original_host = parsed.hostname
+            # Prefer the actual download endpoint used by manual downloads, not a cached CDN URL.
+            is_endpoint = ((original_host in civ_hosts and parsed.path.startswith("/api/download/models/")) or
+                           (original_host in hf_hosts and "/resolve/" in parsed.path) or
+                           (original_host in ms_hosts and ("/resolve/" in parsed.path or
+                            (parsed.path.startswith("/api/v1/models/") and parsed.path.endswith("/repo")))))
+            url = original if is_endpoint else f["url"]
+            env = {"ND_DL_TOKEN": host_token(urlsplit(url).hostname), "ND_DL_NO_OVERWRITE": "1"}
+            if original_host in civ_hosts | hf_hosts | ms_hosts and original != url:
+                env.update(ND_DL_REFRESH_URL=original, ND_DL_REFRESH_TOKEN=host_token(original_host))
+            if is_endpoint and f["url"] != original:
+                env["ND_DL_FALLBACK_URL"] = f["url"]
+            label = "Browser"
+        elif source == "hf" and self.chk_hf_cli.isChecked():
             return self._dl_step_hf_cli(q, f, info)
-        if info["source"] == "hf":
-            # Обычная прямая загрузка по ссылке /resolve/, как в браузере, но в несколько потоков:
-            # файл пишется сразу в папку назначения (.ndpart), после загрузки сверяется SHA-256.
-            q["via"] = "direct"
+        elif source == "hf":
             env = {"ND_DL_TOKEN": self.edit_hf_token.text().strip()}
             url = hf_resolve_url(info["repo"], f["hf_path"], info["revision"], info["repo_type"])
-            return (f"Hugging Face · {q['name']}", self.python_exe,
-                    ["-s", "-c", FAST_DL_SCRIPT, url, str(q["dest"]), conns, f.get("sha256") or ""], q["folder"], env)
+            label = "Hugging Face"
+        else:
+            env = {"ND_DL_TOKEN": self.edit_civ_token.text().strip()}
+            url, label = f["url"], "Civitai"
         q["via"] = "direct"
-        env = {}
-        tok = self.edit_civ_token.text().strip()
-        if tok:
-            env["ND_DL_TOKEN"] = tok
-        return (f"Civitai · {q['name']}", self.python_exe,
-                ["-s", "-c", FAST_DL_SCRIPT, f["url"], str(q["dest"]), conns, f.get("sha256") or ""], q["folder"], env)
+        return (f"{label} · {q['name']}", self.python_exe,
+                ["-s", "-c", FAST_DL_SCRIPT, url, str(q["dest"]), str(self.spin_conn.value()), sha],
+                q["folder"], env)
 
     def _dl_step_hf_cli(self, q, f, info):
         """Загрузка через официальный hf CLI (Xet). Временная папка в папке назначения, в конце файл переносится."""
@@ -3399,7 +3946,10 @@ class MainWindow(QMainWindow):
         return (f"hf download · {q['name']}", self.python_exe, args, q["folder"], env)
 
     def _dl_begin(self, q):
+        self._dl_cancelled = False
         q["status"] = "work"
+        q["speed_text"] = "—"
+        self._dl_output_buf = ""
         self.dl_current = q
         try:
             q["folder"].mkdir(parents=True, exist_ok=True)
@@ -3432,19 +3982,14 @@ class MainWindow(QMainWindow):
         hist = [h for h in (q.get("poll_hist") or []) if now - h[0] <= 8] + [(now, got)]
         q["poll_hist"] = hist
         speed = (got - hist[0][1]) / max(1e-3, now - hist[0][0]) if len(hist) > 1 else 0
-        bits = [q["name"]]
         if q.get("size"):
-            pct = min(100, int(got * 100 / q["size"]))
-            self.dl_bar.setValue(pct)
-            bits.append(f"{pct}%  ({fmt_size(got)} / {fmt_size(q['size'])})")
-        elif got:
-            bits.append(fmt_size(got))
-        if speed > 0:
-            bits.append(fmt_size(speed) + tr("/с"))
-        bits.append(tr("идёт {0}", time.strftime("%M:%S" if now - q["t0"] < 3600 else "%H:%M:%S", time.gmtime(now - q["t0"]))))
-        self.lbl_dl.setText(" · ".join(bits))
+            self.dl_bar.setValue(min(100, int(got * 100 / q["size"])))
+        q["progress_text"] = f"{fmt_size(got)} / {fmt_size(q['size']) if q.get('size') else '?'}"
+        q["speed_text"] = fmt_size(max(0, speed)) + tr("/с")
+        self._update_dl_metrics(q)
+        self.lbl_dl.setText(q["name"])
 
-    DL_ERRORS = {3: "Нет доступа: нужен API-токен Civitai или модель требует входа в аккаунт.",
+    DL_ERRORS = {10: "Файл назначения уже существует; перезапись отменена.", 3: "Нет доступа: нужен API-токен Civitai или модель требует входа в аккаунт.",
                  4: "Файл не найден на сервере.", 5: "Ошибка сервера.", 6: "Ошибка сети — загрузка прервана.",
                  7: "Файл скачался не полностью.", 8: "Контрольная сумма не совпала: файл повреждён и удалён, попробуй скачать ещё раз.", 9: "Не установлен huggingface_hub.", -1: "Не удалось запустить загрузку."}
 
@@ -3473,6 +4018,7 @@ class MainWindow(QMainWindow):
                 got = q["dest"].stat().st_size
             except OSError:
                 got = 0
+            q["progress_text"] = f"{fmt_size(got)} / {fmt_size(got)}"
             self.console.system(tr("Скачано: {0}", f"{q['dest']} ({fmt_size(got)})"))
         else:
             q["status"] = "error"
@@ -3491,39 +4037,58 @@ class MainWindow(QMainWindow):
         self._render_dl_queue()
         return None
 
+    def _downloads_stopping(self):
+        jobs = getattr(self, "_dl_cleanup_jobs", [])
+        self._dl_cleanup_jobs = [event for event in jobs if not event.is_set()]
+        return bool(self._dl_cleanup_jobs) or bool(getattr(self, "_dl_stopping", False))
+
     def _cleanup_partial(self, q, attempt=0):
-        """Удаляет недокачанный .ndpart и временную папку Hugging Face.
-        Если файл ещё занят (процесс загрузки или антивирус), повторяет попытку несколько раз."""
-        left = False
-        part = Path(str(q["dest"]) + ".ndpart")
-        for f in (part, Path(str(part) + ".json")):
+        import threading
+        completed = threading.Event()
+        if not hasattr(self, "_dl_cleanup_jobs"):
+            self._dl_cleanup_jobs = []
+        self._dl_cleanup_jobs.append(completed)
+        dest, stage = str(q["dest"]), q.get("stage")
+        def cleanup():
             try:
-                if f.exists():
-                    f.unlink()
-            except OSError:
-                left = True
-        stage = q.get("stage")
-        if stage:
-            shutil.rmtree(stage, ignore_errors=True)
-            left = left or Path(stage).exists()
-        if left:
-            if attempt < 10:
-                QTimer.singleShot(500, lambda: self._cleanup_partial(q, attempt + 1))
-            else:
-                self.console.system(tr("Не удалось удалить недокачанный файл: {0}", part), error=True)
+                for _ in range(11):
+                    left = False
+                    for suffix in (".ndpart", ".ndpart.json", ".ndpart.json.tmp"):
+                        try:
+                            Path(dest + suffix).unlink(missing_ok=True)
+                        except OSError:
+                            left = True
+                    if stage:
+                        shutil.rmtree(stage, ignore_errors=True)
+                        left = left or Path(stage).exists()
+                    if not left:
+                        return
+                    time.sleep(0.5)
+            finally:
+                completed.set()
+        threading.Thread(target=cleanup, daemon=True).start()
 
     def cancel_downloads(self):
         if not self.dl_tasks.busy and not self.dl_paused:
             return
         self._dl_poll.stop()
         self.dl_paused = False
-        self.dl_tasks.kill(wait_ms=5000)
+        self._dl_cancelled = True
+        self._dl_stopping = self.dl_tasks.busy
+        self.dl_tasks.kill()
         for q in self.dl_queue:
             if q["status"] in ("queued", "work", "paused"):
                 if q["status"] in ("work", "paused"):
-                    self._cleanup_partial(q)
+                    proc = self.dl_tasks.proc
+                    if proc and proc.state() != QProcess.NotRunning:
+                        proc.finished.connect(lambda _code, _status, q=q: self._cleanup_partial(q))
+                    else:
+                        self._cleanup_partial(q)
                 q["status"] = "cancelled"
         self.dl_current = None
+        self.dl_bar.reset()
+        self.dl_bar.hide()
+        self.lbl_dl.clear()
         self.console.system(tr("Загрузка отменена."))
         self._render_dl_queue()
         self.update_controls()
@@ -3540,7 +4105,8 @@ class MainWindow(QMainWindow):
             return
         self.dl_paused = True
         self._dl_poll.stop()
-        self.dl_tasks.kill(wait_ms=5000)
+        self._dl_stopping = self.dl_tasks.busy
+        self.dl_tasks.kill()
         for q in self.dl_queue:
             if q["status"] == "work":
                 q["status"] = "paused"
@@ -3552,6 +4118,8 @@ class MainWindow(QMainWindow):
         self.update_controls()
 
     def resume_downloads(self):
+        if self._downloads_stopping() or self.dl_tasks.busy:
+            return
         steps = []
         for q in self.dl_queue:
             if q["status"] in ("paused", "queued"):
@@ -3573,16 +4141,33 @@ class MainWindow(QMainWindow):
             return
         if self.dl_current.get("via") == "cli":   # прогресс считает _poll_hf_progress, иначе строка мигает
             return
-        pcts = re.findall(r"(\d{1,3})%\|", text)
-        if pcts:
-            self.dl_bar.setValue(min(100, int(pcts[-1])))
-        speeds = re.findall(r"([\d.,]+\s*[kKMG]i?B/s)", text)
-        if pcts or speeds:
-            bits = [self.dl_current["name"]] + ([f"{pcts[-1]}%"] if pcts else []) + (speeds[-1:] if speeds else [])
-            self.lbl_dl.setText(" · ".join(bits))
+        # Keep incomplete output across QProcess reads (a chunk can end in the
+        # middle of the byte count or speed). Only consume complete progress records.
+        buf = getattr(self, "_dl_output_buf", "") + ANSI_RE.sub("", text)
+        pattern = r"(\d{1,3})%\|[^|]*\|\s*([\d.]+\s*[KMGT]?B)\s*/\s*([\d.]+\s*[KMGT]?B|\?)\s*\[([\d.]+\s*[KMGT]?B)/s\]"
+        matches = list(re.finditer(pattern, buf))
+        if matches:
+            last = matches[-1]
+            pct, got, total, speed = last.groups()
+            self.dl_bar.setValue(min(100, int(pct)))
+            q = self.dl_current
+            q["progress_text"] = f"{got} / {total}"
+            q["speed_text"] = speed + tr("/с")
+            self._update_dl_metrics(q)
+            self.lbl_dl.setText(q["name"])
+            buf = buf[last.end():]
+        self._dl_output_buf = buf[-16384:]
 
     def _on_dl_finished(self, title, errors):
+        self._dl_stopping = False
         if self.dl_paused:   # процесс остановлен кнопкой «Пауза», итог не подводим
+            self._render_dl_queue()
+            self.update_controls()
+            return
+        if getattr(self, "_dl_cancelled", False):
+            self.dl_bar.reset()
+            self.dl_bar.hide()
+            self.lbl_dl.clear()
             self._render_dl_queue()
             self.update_controls()
             return
@@ -3595,6 +4180,20 @@ class MainWindow(QMainWindow):
         self._render_dl_queue()
         self._update_dl_summary()
         self.update_controls()
+
+    def _remember_dl_column_width(self, column, old_size, new_size):
+        self._dl_column_widths = [self.tree_dl.columnWidth(i) for i in range(5)]
+
+    def _update_dl_metrics(self, q):
+        item = q.get("_item")
+        if item is None:
+            return
+        progress = q.get("progress_text") or f"{fmt_size(0)} / {fmt_size(q['size']) if q.get('size') else '?'}"
+        speed = q.get("speed_text", "—") if q["status"] == "work" else "—"
+        item.setText(3, progress)
+        item.setText(4, speed)
+        item.setToolTip(3, progress)
+        item.setToolTip(4, speed)
 
     def _render_dl_queue(self):
         if not hasattr(self, "tree_dl"):
@@ -3610,7 +4209,9 @@ class MainWindow(QMainWindow):
                 where = "models\\" + folder.resolve().relative_to((self.comfy / "models").resolve()).as_posix().replace("/", "\\")
             except Exception:
                 where = str(folder)
-            it = QTreeWidgetItem([q["name"] + (f"  ·  {fmt_size(q['size'])}" if q["size"] else ""), where, label])
+            it = QTreeWidgetItem([q["name"], where, label, "", ""])
+            q["_item"] = it
+            self._update_dl_metrics(q)
             it.setForeground(2, QColor(color))
             it.setData(0, Qt.UserRole, str(q["dest"]) if q["status"] == "done" else str(folder))
             if q.get("error"):
@@ -3627,7 +4228,8 @@ class MainWindow(QMainWindow):
             self.btn_dl_pause.setIcon(ic)
             self._dl_pause_icon = kind
         self.btn_dl_pause.setText(tr("Продолжить") if self.dl_paused else tr("Пауза"))
-        self.dl_bar.setVisible(busy or self.dl_paused or any(q["status"] != "queued" for q in self.dl_queue))
+        show_progress = self.dl_paused or any(q["status"] in ("work", "paused", "done", "error") for q in self.dl_queue)
+        self.dl_bar.setVisible(show_progress and not getattr(self, "_dl_cancelled", False))
 
     # ── страница: перенос ──
     def _page_transfer(self):
@@ -3841,7 +4443,35 @@ class MainWindow(QMainWindow):
         lay.addWidget(xp)
         self._update_example_ui()
 
+        cp, cpl = panel(tr('Загрузки из браузера'))
+        self.chk_browser_capture = QCheckBox(tr('Принимать модели с Hugging Face, Civitai и ModelScope через браузер'))
+        self.chk_browser_capture.setChecked(bool(self.cfg.get("browser_capture", False)))
+        self.chk_browser_capture.toggled.connect(self._on_browser_capture_toggled)
+        cpl.addWidget(self.chk_browser_capture)
+        self.chk_browser_show = QCheckBox(tr("Показывать вкладку загрузок при получении модели из браузера"))
+        self.chk_browser_show.setChecked(bool(self.cfg.get("browser_show_downloads", True)))
+        self.chk_browser_show.toggled.connect(lambda v: self._set_cfg("browser_show_downloads", v))
+        cpl.addWidget(self.chk_browser_show)
+        cpl.addWidget(muted(tr('Установи расширение в выбранный Chromium-браузер и вставь ключ подключения. Путь сохранения выбирается в браузере.')))
+        browser_buttons = QVBoxLayout()
+        browser_buttons.addWidget(button(tr("Установить расширение браузера"), self._install_chrome_extension))
+        browser_buttons.addWidget(button(tr('Скопировать ключ подключения'), self._copy_browser_key))
+        browser_buttons_row = QHBoxLayout()
+        browser_buttons_row.addStretch(2)
+        browser_buttons_row.addLayout(browser_buttons, 6)
+        browser_buttons_row.addStretch(2)
+        cpl.addLayout(browser_buttons_row)
+        self.lbl_browser_capture = muted("", True)
+        cpl.addWidget(self.lbl_browser_capture)
+        self._render_browser_bridge_status()
+        lay.addWidget(cp)
+
         bp, bl = panel(tr('Поведение лаунчера'))
+        self.chk_launcher_updates = QCheckBox(tr('Проверять обновления лаунчера при запуске'))
+        self.chk_launcher_updates.setChecked(bool(self.cfg.get("check_launcher_updates", True)))
+        self.chk_launcher_updates.toggled.connect(self._on_launcher_updates_toggled)
+        bl.addWidget(self.chk_launcher_updates)
+        bl.addWidget(muted(tr('Проверка выполняется в фоне. Ссылка на новую версию появляется над кнопкой «Запустить».')))
         self.chk_tray = QCheckBox(tr('Сворачивать в трей'))
         self.chk_tray.setChecked(bool(self.cfg.get("minimize_to_tray")))
         self.chk_tray.toggled.connect(self._on_tray_toggled)
@@ -4150,6 +4780,7 @@ class MainWindow(QMainWindow):
             self.console.system(tr('SageAttention не найден в python_embeded — ComfyUI может не запуститься. Поставь его или выбери другой Attention.'), error=True)
         if o["attention"] == "--use-flash-attention" and not self.has_package("flash_attn"):
             self.console.system(tr('flash_attn не найден в python_embeded — ComfyUI может не запуститься.'), error=True)
+        self._clear_generation_progress()
         self._ensure_example_image()
         self.console.system(tr('Запуск: ') + self.command_text())
         dec = codecs.getincrementaldecoder("utf-8")("replace")
@@ -4279,6 +4910,7 @@ class MainWindow(QMainWindow):
             self._fill_browsers()
 
     def _on_comfy_finished(self, code, _status=None):
+        self._clear_generation_progress()
         self.console.system(tr('ComfyUI остановлен (код {0})', code))
         self.proc = None
         self.server_url = None
@@ -4289,6 +4921,7 @@ class MainWindow(QMainWindow):
 
     def _on_comfy_error(self, err):
         if err == QProcess.FailedToStart:
+            self._clear_generation_progress()
             self.console.system(tr('Не удалось запустить {0}', self.python_exe), error=True)
             self.proc = None
             self.set_status("stopped")
@@ -4296,6 +4929,11 @@ class MainWindow(QMainWindow):
     def _on_line(self, line, source):
         if source != "comfy":
             return
+        low = line.lower()
+        if "got prompt" in low:
+            self._clear_generation_progress()
+        elif any(marker in low for marker in ("prompt executed", "processing interrupted", "exception during processing")):
+            self._progress_hide.start(1500)
         m = re.search(r"To see the GUI go to:\s*(\S+)", line)
         if m:
             url = m.group(1).replace("0.0.0.0", "127.0.0.1").replace("[::]", "127.0.0.1")
@@ -4306,11 +4944,20 @@ class MainWindow(QMainWindow):
             if self.chk_browser.isChecked():
                 self.open_browser()
 
+    def _clear_generation_progress(self):
+        self._progress_hide.stop()
+        self._generation_progress = None
+        self.pbar.hide()
+        self.lbl_progress.setText("")
+
     def _on_progress(self, pct, text):
+        # A single inference step can take minutes. Silence (even at 100% of an
+        # intermediate node) is not completion of the workflow.
+        self._progress_hide.stop()
+        self._generation_progress = (pct, text)
         self.pbar.show()
         self.pbar.setValue(pct)
         self.lbl_progress.setText(text[-80:])
-        self._progress_hide.start(4000 if pct < 100 else 1500)
 
     # ── обновления ──
     def _ensure_idle(self, what=None):
@@ -4326,35 +4973,45 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def _post_update_steps(self, kind):
+        if not self.cfg.get("post_update_enabled", False) or not self.cfg.get("post_update_" + kind, kind == "comfy"):
+            return []
+        commands = parse_post_update_commands(self.cfg.get("post_update_commands", ""))
+        if not commands:
+            return []
+        python_exe, cwd = self.python_exe, self.root
+        def start_commands():
+            if self.tasks.errors:
+                self.console.system(tr("Команды после обновления пропущены: обновление завершилось с ошибкой."))
+                return None
+            def next_command(number, args):
+                if self.tasks.errors:
+                    return None
+                return [(tr("Команда после обновления · строка {0}", number), python_exe, args, cwd)]
+            return [lambda number=number, args=args: next_command(number, args) for number, args in commands]
+        return [start_commands]
+
     def update_comfy(self, with_deps):
         if not self._ensure_idle():
             return
         upd = self.root / "update"
-        py = self.python_exe
-        comfy_arg = str(self.comfy) + os.sep
-        steps = []
-        if (upd / "update.py").exists():
-            steps.append((tr('Обновление ComfyUI'), py, [str(upd / "update.py"), comfy_arg], upd))
-
-            def rerun():
-                new = upd / "update_new.py"
-                if new.exists():
-                    os.replace(new, upd / "update.py")
-                    return [(tr('Апдейтер обновился — запускаю ещё раз'), py,
-                             [str(upd / "update.py"), comfy_arg, "--skip_self_update"], upd)]
-                return None
-            steps.append(rerun)
-        else:
-            git = find_git(self.root)
-            if git and (self.comfy / ".git").exists():
-                steps.append(("git pull ComfyUI", git, ["pull", "--ff-only"], self.comfy))
-            else:
-                QMessageBox.warning(self, APP_TITLE, tr('Не найден ни update/update.py, ни git-репозиторий ComfyUI.'))
+        scripts = (["update_comfyui_and_python_dependencies.bat"] if with_deps else [])
+        scripts.append("update_comfyui_stable.bat")
+        for script in scripts:
+            if not (upd / script).is_file():
+                QMessageBox.warning(self, APP_TITLE, tr('Не найден штатный батник: {0}', upd / script))
                 return
-        if with_deps:
-            steps.append((tr('Зависимости ComfyUI'), py, ["-s", "-m", "pip", "install", "-r",
-                                                      str(self.comfy / "requirements.txt")], self.comfy))
+        # Keep the build's dependency/CUDA commands, then select stable last:
+        # the dependencies batch can switch ComfyUI back to master.
+        cmd = os.environ.get("COMSPEC", "cmd.exe")
+        steps = [(tr('Обновление ComfyUI'), cmd,
+                  ["/d", "/c", f"call {script} nopause <nul"], upd) for script in scripts]
         steps.append(self.replace_example_image)
+        try:
+            steps += self._post_update_steps("comfy")
+        except ValueError as exc:
+            QMessageBox.warning(self, APP_TITLE, str(exc))
+            return
         self.tasks.run(tr('Обновление ComfyUI'), steps)
 
     def example_source(self):
@@ -4443,6 +5100,11 @@ class MainWindow(QMainWindow):
         steps = [(f"git pull · {d.name}", git, ["pull", "--ff-only"], d) for d in dirs]
         if self.chk_deps.isChecked():
             steps += self._deps_steps(dirs)
+        try:
+            steps += self._post_update_steps("nodes")
+        except ValueError as exc:
+            QMessageBox.warning(self, APP_TITLE, str(exc))
+            return
         self.tasks.run(tr('Обновление кастом-нод ({0})', len(dirs)), steps)
 
     def _deps_steps(self, dirs):
@@ -5363,20 +6025,23 @@ class MainWindow(QMainWindow):
             self.tray.showMessage(APP_TITLE, tr('Лаунчер свёрнут в трей. ComfyUI продолжает работать.'),
                                   make_icon(), 3000)
 
-    def bring_to_front(self):
+    def bring_to_front(self, browser_handoff=False):
         self.show()
         if self.isMinimized():
-            self.showNormal()
+            if self.windowState() & Qt.WindowMaximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
         self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
         self.raise_()
         self.activateWindow()
         if sys.platform == "win32":
             try:
-                import ctypes
-                ctypes.windll.user32.ShowWindow(int(self.winId()), 9)  # SW_RESTORE
-                ctypes.windll.user32.SetForegroundWindow(int(self.winId()))
-            except Exception:
-                pass
+                release = raise_window_windows(int(self.winId()), ensure_visible=browser_handoff)
+                if release:
+                    QTimer.singleShot(250, release)
+            except Exception as exc:
+                self.console.system(tr("Не удалось поднять окно лаунчера: {0}", exc), error=True)
 
     def quit_from_tray(self):
         self.bring_to_front()

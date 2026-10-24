@@ -14,7 +14,11 @@
 
 </div>
 
+Originally developed for **Neural Dreamer** builds ([Patreon](https://www.patreon.com/neural_dreamer/posts/dreamer-build-171026216) · [Boosty](https://boosty.to/neural_dreamer/posts/8ab08a6b-3adc-4379-a8b9-93acc816d57d) — Dreamer Build Pro), ND Launcher is compatible with any portable ComfyUI build.
+
 No more `.bat` files and launch flags to remember. ND Launcher starts ComfyUI with the right settings, updates it and your custom nodes, installs new nodes and models, moves everything over from an old build, and keeps the console, GPU stats and your workflows in one place.
+
+Browser extension: [installation and usage](BROWSER_EXTENSION.md).
 
 ![ND Launcher](docs/screenshots/launch.png)
 

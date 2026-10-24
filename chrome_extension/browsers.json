@@ -1,0 +1,10 @@
+[
+  {"id":"chrome","name":"Google Chrome","exe":["chrome.exe"],"url":"chrome://extensions/","paths":["Google/Chrome/Application/chrome.exe","Google/Chrome Beta/Application/chrome.exe","Google/Chrome SxS/Application/chrome.exe"]},
+  {"id":"edge","name":"Microsoft Edge","exe":["msedge.exe"],"url":"edge://extensions/","paths":["Microsoft/Edge/Application/msedge.exe","Microsoft/Edge Beta/Application/msedge.exe"]},
+  {"id":"yandex","name":"Яндекс Браузер","exe":["browser.exe","yandex.exe"],"hint":"yandex|яндекс","url":"browser://extensions/","paths":["Yandex/YandexBrowser/Application/browser.exe","Yandex/YandexBrowser Beta/Application/browser.exe"]},
+  {"id":"brave","name":"Brave","exe":["brave.exe"],"url":"brave://extensions/","paths":["BraveSoftware/Brave-Browser/Application/brave.exe"]},
+  {"id":"opera","name":"Opera / Opera GX","exe":["opera.exe","launcher.exe"],"hint":"opera","url":"opera://extensions/","paths":["Programs/Opera/launcher.exe","Programs/Opera GX/launcher.exe","Opera/launcher.exe","Opera GX/launcher.exe","Programs/Opera/opera.exe","Programs/Opera GX/opera.exe","Opera/opera.exe","Opera GX/opera.exe"]},
+  {"id":"vivaldi","name":"Vivaldi","exe":["vivaldi.exe"],"url":"vivaldi://extensions/","paths":["Vivaldi/Application/vivaldi.exe"]},
+  {"id":"chromium","name":"Chromium","exe":["chromium.exe","chrome.exe"],"hint":"chromium","url":"chrome://extensions/","paths":["Chromium/Application/chrome.exe","Chromium/Application/chromium.exe"]},
+  {"id":"thorium","name":"Thorium","exe":["thorium.exe"],"url":"chrome://extensions/","paths":["Thorium/Application/thorium.exe"]}
+]

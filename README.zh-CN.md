@@ -14,7 +14,11 @@
 
 </div>
 
+本启动器最初为 **Neural Dreamer** 整合包开发（[Patreon](https://www.patreon.com/neural_dreamer/posts/dreamer-build-171026216) · [Boosty](https://boosty.to/neural_dreamer/posts/8ab08a6b-3adc-4379-a8b9-93acc816d57d) — Dreamer Build Pro），同时兼容任何 ComfyUI 便携整合包。
+
 不再需要编辑 `.bat` 文件，也不用记住启动参数。ND Launcher 会用合适的设置启动 ComfyUI，更新 ComfyUI 和自定义节点，安装新节点和模型，从旧整合包迁移全部内容，并把控制台、显卡监控和工作流集中在一个窗口里。
+
+浏览器扩展：[安装与使用](BROWSER_EXTENSION.zh-CN.md)。
 
 ![ND Launcher](docs/screenshots/launch.png)
 

@@ -33,7 +33,7 @@ echo [ND] Скачиваю иконки ссылок...
 "%PY%" tools\make_version_info.py
 
 echo [ND] Собираю exe...
-"%PY%" -m PyInstaller --noconfirm --clean --log-level WARN --onefile --windowed --name ND_Launcher --icon nd_icon.ico --version-file version_info.txt --noupx --add-data "brand;brand" --hidden-import nd_i18n nd_launcher.py
+"%PY%" -m PyInstaller --noconfirm --clean --log-level WARN --onefile --windowed --name ND_Launcher --icon nd_icon.ico --version-file version_info.txt --noupx --add-data "brand;brand" --add-data "chrome_extension;chrome_extension" --hidden-import nd_i18n nd_launcher.py
 if errorlevel 1 goto fail
 
 echo.
