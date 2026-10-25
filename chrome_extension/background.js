@@ -1,5 +1,5 @@
 /* Two-phase handoff. Never cancel Chrome before the launcher reserves the target. */
-const BASE = 'http://127.0.0.1:17863';
+importScripts('bridge.js');
 const active = new Set();
 function redUrl(value) {
   try { const u = new URL(value); return u.protocol === 'https:' && ['civitai.red','www.civitai.red','civitai.com','www.civitai.com','huggingface.co','www.huggingface.co','modelscope.cn','www.modelscope.cn'].includes(u.hostname) && !u.username && !u.password && (!u.port || u.port === "443"); }
@@ -13,13 +13,7 @@ function candidate(item) {
 async function api(action, data) {
   const {token = ''} = await chrome.storage.local.get('token');
   if (!token) throw new Error('Сначала укажите ключ подключения.');
-  const response = await fetch(BASE + '/' + action, {
-    method: 'POST', headers: {'Content-Type': 'application/json', 'X-ND-Token': token},
-    body: JSON.stringify(data), signal: AbortSignal.timeout(12000)
-  });
-  const result = await response.json();
-  if (!response.ok || !result.ok) throw new Error(result.error || 'Лаунчер не принял задание.');
-  return result;
+  return bridgeFetch(action, data, token);
 }
 async function status(message, failed = false) {
   await chrome.storage.local.set({lastStatus: message});

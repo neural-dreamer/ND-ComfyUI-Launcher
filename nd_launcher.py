@@ -33,7 +33,7 @@ import secrets
 from pathlib import Path
 
 from PySide6.QtCore import (QTranslator, QLibraryInfo, QLocale, Qt, QObject, QProcess, QProcessEnvironment, QTimer, QUrl, QRectF, QPointF, QSize,
-                            QThread, Signal, QEvent)
+                            QThread, Signal, QEvent, QVariantAnimation, QEasingCurve)
 from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath, QLinearGradient, QPen, QBrush, QIcon, QPixmap,
                            QDesktopServices, QImage, QTextCursor, QTextCharFormat, QTextDocument, QGuiApplication, QPalette, QRegion)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
     QPushButton, QComboBox, QDialog, QCheckBox, QSpinBox, QLineEdit, QPlainTextEdit, QTextBrowser,
     QStackedWidget, QSplitter, QFileDialog, QMessageBox, QProgressBar, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QInputDialog, QGraphicsDropShadowEffect, QScrollArea, QButtonGroup, QTableWidget,
-    QTableWidgetItem, QAbstractItemView, QSizePolicy, QSystemTrayIcon, QMenu,
+    QTableWidgetItem, QAbstractItemView, QSizePolicy, QSystemTrayIcon, QMenu, QAbstractButton,
 )
 
 # ─────────────────────────────── локализация ──────────────────────────────────
@@ -51,6 +51,8 @@ if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parent))  # python_embeded (._pth) не видит папку скрипта
 from nd_browser import BrowserServer, PORT as BROWSER_PORT
 from nd_extension_install import load_catalog, browser_spec, extension_browsers, prepare_extension
+import nd_backup as backup
+import nd_modelpaths as modelpaths
 
 try:
     from nd_i18n import TRANSLATIONS
@@ -106,7 +108,7 @@ def install_qt_translator(code):
 
 
 APP_TITLE = "ND · ComfyUI Launcher"
-VERSION = "1.1.3"
+VERSION = "1.2.0"
 DEFAULT_PORT = 8188
 BRAND_NAME = "Neural Dreamer"
 REPO_URL = "https://github.com/neural-dreamer/ND-ComfyUI-Launcher"
@@ -524,7 +526,7 @@ def check_launcher_update():
     if newer:
         version, url = max(newer, key=lambda item: item[0])
         return {"version": ".".join(map(str, version)), "url": url}
-    if errors:
+    if errors and not candidates:   # ошибка — только если ни один источник не ответил
         raise errors[0]
     return None
 
@@ -1240,8 +1242,10 @@ PAGES = [  # ключ, подпись, иконка, обернуть в про�
     ("console", "Консоль", "console", False),
     ("workflows", "Воркфлоу", "workflows", False),
     ("updates", "Обновления", "updates", True),
+    ("backups", "Бэкапы", "backup", True),
     ("install", "Установка нод", "install", True),
     ("models", "Загрузка моделей", "cloud", True),
+    ("modelpaths", "Пути к моделям", "link", True),
     ("transfer", "Перенос", "transfer", True),
     ("folders", "Папки и ссылки", "folder", True),
     ("settings", "Настройки", "settings", True),
@@ -1786,6 +1790,11 @@ QHeaderView::section { background: @SURFACE2; color: @MUTED; border: none; paddi
 QHeaderView::section:horizontal:first { border-top-left-radius: @R_LG; }
 QHeaderView::section:horizontal:last { border-top-right-radius: @R_LG; }
 QHeaderView::section:horizontal:only-one { border-top-left-radius: @R_LG; border-top-right-radius: @R_LG; }
+QHeaderView[ndFilled="true"]::section:horizontal:last { border-top-right-radius: 0px; }
+QHeaderView[ndFilled="true"]::section:horizontal:only-one { border-top-right-radius: 0px; }
+#HeaderFiller { background: @SURFACE2; border-top-right-radius: @R_LG; }
+#FocusLabel { color: @MUTED; font-weight: 600; }
+#FocusLabel[on="true"] { color: @CYAN; }
 QTreeWidget > QWidget, QTableWidget > QWidget { background: transparent; }
 
 QScrollArea { border: none; background: transparent; }
@@ -1878,6 +1887,15 @@ def draw_icon(kind, size=20, color=None, gradient=False) -> QPixmap:
 
     if kind == "launch":
         poly((6.5, 4), (16, 10), (6.5, 16))
+    elif kind == "backup":  # «история»: стрелка против часовой и стрелки часов
+        arc = QPainterPath()
+        rect = QRectF(3 * u, 3 * u, 14 * u, 14 * u)
+        arc.arcMoveTo(rect, 150)
+        arc.arcTo(rect, 150, -300)
+        p.drawPath(arc)
+        poly((1.7, 4.4), (3.9, 6.5), (6.2, 4.6), close=False)
+        p.drawLine(P(10, 6.6), P(10, 10.2))
+        p.drawLine(P(10, 10.2), P(12.6, 11.8))
     elif kind == "pause":  # две закруглённые полоски
         p.setPen(Qt.NoPen)
         p.setBrush(brush)
@@ -2255,6 +2273,90 @@ class RoundedDownloadHeader(QHeaderView):
         self.setMask(QRegion(path.united(bottom).toFillPolygon().toPolygon()))
 
 
+class NeonSwitch(QAbstractButton):
+    """Переключатель как в расширении браузера: тёмная дорожка; во включённом состоянии рамка и бегунок —
+    градиент темы со свечением, бегунок плавно съезжает вправо."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(46, 24)
+        self._pos = 0.0
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(200)
+        self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._anim.valueChanged.connect(self._set_pos)
+        self.toggled.connect(self._animate)
+
+    def _set_pos(self, v):
+        self._pos = float(v)
+        self.update()
+
+    def _animate(self, on):
+        self._anim.stop()
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+        glow = glow_effect(self, C["GLOW1"], 16) if on else None
+        self.setGraphicsEffect(glow)
+
+    def setChecked(self, on):
+        super().setChecked(on)
+        self._anim.stop()
+        self._set_pos(1.0 if on else 0.0)
+
+    def _gradient(self, rect):
+        g = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        cyan, pink = QColor(C["CYAN"]), QColor(C["PINK"])
+        mid = QColor((cyan.red() + pink.red()) // 2, (cyan.green() + pink.green()) // 2, (cyan.blue() + pink.blue()) // 2)
+        g.setColorAt(0, cyan)
+        g.setColorAt(0.5, mid)
+        g.setColorAt(1, pink)
+        return g
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+        rad = r.height() / 2
+        on = self._pos > 0.5
+        p.setPen(QPen(QBrush(self._gradient(r)), 2) if on else QPen(QColor(C["BORDER_STRONG"]), 2))
+        p.setBrush(QColor(C["BG"]))
+        p.drawRoundedRect(r, rad, rad)
+        d = r.height() - 6
+        x = r.left() + 3 + (r.width() - 6 - d) * self._pos
+        knob = QRectF(x, r.top() + 3, d, d)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(self._gradient(knob)) if on else QColor(C["MUTED"]))
+        p.drawEllipse(knob)
+        if not self.isEnabled():
+            p.fillRect(self.rect(), QColor(0, 0, 0, 90))
+
+
+def fill_header_over_scrollbar(tree):
+    """Полоса прокрутки таблицы начинается под заголовком: над ней — продолжение заголовка того же цвета.
+    Пока полоса видна, правый угол скругляет заглушка, а не последняя колонка заголовка."""
+    header = tree.header()
+    filler = QFrame()   # у простого QWidget таблица стилей не скругляет углы
+    filler.setObjectName("HeaderFiller")
+    filler.setFixedHeight(max(1, header.sizeHint().height()))
+    tree.addScrollBarWidget(filler, Qt.AlignTop)
+    bar = tree.verticalScrollBar()
+
+    def sync(*_):
+        filler.setFixedHeight(max(1, header.height() or header.sizeHint().height()))
+        shown = bar.maximum() > 0
+        if header.property("ndFilled") != shown:
+            header.setProperty("ndFilled", shown)
+            header.style().unpolish(header)
+            header.style().polish(header)
+            header.viewport().update()
+    bar.rangeChanged.connect(sync)
+    header.geometriesChanged.connect(sync)
+    sync()
+
+
 class NoWheelComboBox(QComboBox):
     """Значение меняется только через раскрытый список: колесо мыши над полем прокручивает страницу,
     а не переключает пункт. Сам раскрытый список прокручивается как обычно."""
@@ -2582,7 +2684,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.page_index = {}
         builders = dict(launch=self._page_launch, console=self._page_console, workflows=self._page_workflows,
-                        updates=self._page_updates, install=self._page_install, models=self._page_models, transfer=self._page_transfer, folders=self._page_folders,
+                        updates=self._page_updates, backups=self._page_backups, install=self._page_install, models=self._page_models, modelpaths=self._page_modelpaths, transfer=self._page_transfer, folders=self._page_folders,
                         settings=self._page_settings)
         self._page_contents = []
         for key, _title, _icon, scroll in PAGES:
@@ -2597,6 +2699,7 @@ class MainWindow(QMainWindow):
             self.page_index[key] = self.stack.addWidget(page)
         body.addWidget(self.stack, 1)
         outer.addLayout(body, 1)
+        self._apply_focus_mode()
 
     def _fit_min_width(self):
         """Минимальная ширина окна = самая широкая вкладка + меню + полоса прокрутки,
@@ -2627,10 +2730,45 @@ class MainWindow(QMainWindow):
                 g.moveTop(max(scr.top(), min(g.top(), scr.bottom() - g.height())))
                 self.move(g.topLeft())
 
+    FOCUS_PAGES = ("console", "workflows", "models")   # по умолчанию
+    FOCUS_ALWAYS = ("settings",)                        # в фокус-режиме видны всегда, в списке не выбираются
+
+    def _focus_pages(self):
+        keys = [k for k, *_ in PAGES]
+        saved = self.cfg.get("focus_pages")
+        chosen = [k for k in (self.FOCUS_PAGES if saved is None else saved) if k in keys and k not in self.FOCUS_ALWAYS]
+        return chosen + [k for k in keys if k in self.FOCUS_ALWAYS]
+
+    def _on_focus_pages_changed(self, *_):
+        self._set_cfg("focus_pages", [k for k, c in self.focus_checks.items() if c.isChecked()])
+        self._apply_focus_mode(redirect=False)   # не уводим со страницы «Настройки», пока выбираешь
+
+    def set_focus_mode(self, on):
+        self._set_cfg("focus_mode", bool(on))
+        self._apply_focus_mode()
+
+    def _apply_focus_mode(self, redirect=True):
+        """Фокус-режим прячет в меню всё, кроме основных вкладок; сами страницы остаются и работают."""
+        on = bool(self.cfg.get("focus_mode", False))
+        pages = self._focus_pages()
+        for key, b in self.nav_buttons.items():
+            b.setVisible(not on or key in pages)
+        if hasattr(self, "lbl_focus"):
+            self.lbl_focus.setProperty("on", on)
+            self.lbl_focus.style().unpolish(self.lbl_focus)
+            self.lbl_focus.style().polish(self.lbl_focus)
+        current = next((k for k, i in self.page_index.items() if i == self.stack.currentIndex()), None)
+        if on and redirect and current not in pages:
+            self.go(pages[0])
+
     def go(self, key):
         i = self.page_index[key]
         self.nav_buttons[key].setChecked(True)
         self.stack.setCurrentIndex(i)
+        if key == "backups":
+            self._refresh_backups()
+        elif key == "modelpaths":
+            self._mp_refresh()
 
     def _build_header(self):
         h = QFrame()
@@ -2653,6 +2791,20 @@ class MainWindow(QMainWindow):
         col.addStretch()
         lay.addLayout(col)
         lay.addStretch()
+        focus = QHBoxLayout()
+        focus.setSpacing(8)
+        self.lbl_focus = QLabel(tr("Фокус-режим"))
+        self.lbl_focus.setObjectName("FocusLabel")
+        self.sw_focus = NeonSwitch()
+        tip = tr("Фокус-режим: в меню остаются только выбранные вкладки (их можно выбрать в «Настройках»). Запуск — кнопкой слева внизу.")
+        self.sw_focus.setToolTip(tip)
+        self.lbl_focus.setToolTip(tip)
+        self.sw_focus.setChecked(bool(self.cfg.get("focus_mode", False)))
+        self.sw_focus.toggled.connect(self.set_focus_mode)
+        focus.addWidget(self.lbl_focus)
+        focus.addWidget(self.sw_focus)
+        lay.addLayout(focus)
+        lay.addSpacing(10)
         self.gpu = GpuMonitor()
         lay.addWidget(self.gpu)
         pill = QFrame()
@@ -2960,6 +3112,11 @@ class MainWindow(QMainWindow):
         row.addWidget(button(tr('⟳  ComfyUI + зависимости'), lambda: self.update_comfy(True)))
         row.addStretch()
         cpl.addLayout(row)
+        chk_backup = QCheckBox(tr("Создавать точку восстановления перед обновлением"))
+        chk_backup.setToolTip(tr("Перед обновлением ComfyUI лаунчер сохранит точку на вкладке «Бэкапы», чтобы можно было откатиться."))
+        chk_backup.setChecked(bool(self.cfg.get("backup_before_update", False)))
+        chk_backup.toggled.connect(lambda value: self._set_cfg("backup_before_update", value))
+        cpl.addWidget(chk_backup)
         lay.addWidget(cp)
 
         pp, ppl = panel()
@@ -3646,6 +3803,34 @@ class MainWindow(QMainWindow):
         self._launcher_update_pending = True
         run_in_thread(self._bridge, "launcher_update", check_launcher_update)
 
+    def check_launcher_update_now(self):
+        """Кнопка «Проверить обновления»: работает и при выключенной автопроверке, результат — в окне."""
+        if getattr(self, "_manual_update_pending", False):
+            return
+        self._manual_update_pending = True
+        if hasattr(self, "btn_check_updates"):
+            self.btn_check_updates.setEnabled(False)
+            self.btn_check_updates.setText(tr("Проверяю…"))
+        run_in_thread(self._bridge, ("launcher_update_manual",), check_launcher_update)
+
+    def _on_manual_update(self, result, error):
+        self._manual_update_pending = False
+        if hasattr(self, "btn_check_updates"):
+            self.btn_check_updates.setEnabled(True)
+            self.btn_check_updates.setText(tr("Проверить обновления"))
+        if error is not None:
+            QMessageBox.warning(self, APP_TITLE, tr('Не удалось проверить обновление лаунчера: {0}', error))
+            return
+        if not result:
+            QMessageBox.information(self, APP_TITLE, tr("Установлена последняя версия лаунчера: v{0}.", VERSION))
+            return
+        if self.cfg.get("check_launcher_updates", True):
+            self._launcher_update = result
+            self._render_launcher_update()
+        if QMessageBox.question(self, APP_TITLE, tr("Доступна новая версия лаунчера: {0} (установлена v{1}). Открыть страницу обновления?",
+                                                    result["version"], VERSION)) == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl(result["url"]))
+
     def _render_launcher_update(self):
         info = self._launcher_update if self.cfg.get("check_launcher_updates", True) else None
         self.lbl_launcher_update.setVisible(bool(info))
@@ -3657,6 +3842,14 @@ class MainWindow(QMainWindow):
             self.lbl_launcher_update.setToolTip(tr('Открыть страницу обновления лаунчера'))
 
     def _on_bridge(self, tag, result, error):
+        if isinstance(tag, tuple) and tag[0] == "backup_job":
+            return self._on_backup_job(tag[1], result, error)
+        if isinstance(tag, tuple) and tag[0] == "backup_refresh":
+            return self._on_backup_refresh(tag[1], result, error)
+        if isinstance(tag, tuple) and tag[0] == "mp_status":
+            return self._on_mp_status(tag[1], result, error)
+        if isinstance(tag, tuple) and tag[0] == "launcher_update_manual":
+            return self._on_manual_update(result, error)
         if tag == "launcher_update":
             self._launcher_update_pending = False
             # A request already in flight may finish after the checkbox is cleared.
@@ -4388,6 +4581,970 @@ class MainWindow(QMainWindow):
         lay.addStretch()
         return page
 
+    # ── страница: пути к моделям ──
+    # Логика — в nd_modelpaths.py; здесь только интерфейс. Файл — ComfyUI/extra_model_paths.yaml.
+    def _page_modelpaths(self):
+        page, lay = self._new_page(tr("Пути к моделям"), tr("Подключи модели из других сборок и папок без копирования. Лаунчер ведёт ComfyUI/extra_model_paths.yaml и при необходимости создаёт ссылки на папки. ComfyUI увидит изменения после перезапуска."))
+        if not hasattr(self, "_mp_sections"):
+            self._mp_sections, self._mp_status, self._mp_seq = [], {}, 0
+        self._mp_edit = None   # при пересборке интерфейса (тема, язык) редактор закрывается
+
+        sp, spl = panel(tr("Подключённые источники — записи в extra_model_paths.yaml"))
+        self.tree_mp = QTreeWidget()
+        self.tree_mp.setHeaderLabels([tr("Название"), tr("Папка"), tr("Что подключено"), tr("Статус")])
+        self.tree_mp.setRootIsDecorated(False)
+        self.tree_mp.setAlternatingRowColors(True)
+        self.tree_mp.setMinimumHeight(150)
+        h = self.tree_mp.header()
+        h.setStretchLastSection(False)
+        for c, mode in ((0, QHeaderView.ResizeToContents), (1, QHeaderView.Stretch), (2, QHeaderView.Stretch), (3, QHeaderView.ResizeToContents)):
+            h.setSectionResizeMode(c, mode)
+        self.tree_mp.itemSelectionChanged.connect(self._mp_update_buttons)
+        self.tree_mp.itemDoubleClicked.connect(lambda *_: self._mp_edit_selected())
+        spl.addWidget(self.tree_mp, 1)
+        row = QHBoxLayout()
+        row.addWidget(button(tr("＋ Другая сборка ComfyUI…"), lambda: self._mp_add(True), "Accent"))
+        row.addWidget(button(tr("＋ Папка с моделями…"), lambda: self._mp_add(False)))
+        self.btn_mp_edit = button(tr("Изменить"), self._mp_edit_selected)
+        self.btn_mp_toggle = button(tr("Выключить"), self._mp_toggle)
+        self.btn_mp_delete = button(tr("Удалить"), self._mp_delete, "Danger")
+        for b in (self.btn_mp_edit, self.btn_mp_toggle, self.btn_mp_delete):
+            row.addWidget(b)
+        row.addStretch()
+        row.addWidget(button(tr("↻  Проверить"), self._mp_refresh))
+        row.addWidget(button(tr("Открыть yaml"), self._mp_open_yaml))
+        spl.addLayout(row)
+        lay.addWidget(sp, 3)
+
+        mid = QHBoxLayout()
+        mid.setSpacing(14)
+        self.mp_editor, el = panel()
+        self.lbl_mp_editor = QLabel()
+        self.lbl_mp_editor.setObjectName("PanelTitle")
+        el.addWidget(self.lbl_mp_editor)
+        g = QGridLayout()
+        g.setHorizontalSpacing(12)
+        g.addWidget(muted(tr("Название"), False), 0, 0)
+        self.edit_mp_title = QLineEdit()
+        self.edit_mp_title.textChanged.connect(self._mp_preview)
+        g.addWidget(self.edit_mp_title, 0, 1, 1, 2)
+        g.addWidget(muted(tr("Папка"), False), 1, 0)
+        self.edit_mp_base = QLineEdit()
+        self.edit_mp_base.setReadOnly(True)
+        g.addWidget(self.edit_mp_base, 1, 1)
+        g.addWidget(button(tr("Обзор…"), self._mp_browse_base), 1, 2)
+        g.setColumnStretch(1, 1)
+        el.addLayout(g)
+        self.lbl_mp_detect = muted("", True)
+        el.addWidget(self.lbl_mp_detect)
+        self.tree_mp_types = QTreeWidget()
+        self.tree_mp_types.setHeaderLabels([tr("Тип моделей"), tr("Подпапка"), tr("Файлов"), tr("Как подключить")])
+        self.tree_mp_types.setRootIsDecorated(False)
+        self.tree_mp_types.setMinimumHeight(220)
+        th = self.tree_mp_types.header()
+        th.setStretchLastSection(False)
+        for c, mode in ((0, QHeaderView.Stretch), (1, QHeaderView.Stretch), (2, QHeaderView.ResizeToContents), (3, QHeaderView.ResizeToContents)):
+            th.setSectionResizeMode(c, mode)
+        self.tree_mp_types.itemChanged.connect(lambda *_: self._mp_preview())
+        el.addWidget(self.tree_mp_types, 1)
+        el.addWidget(muted(tr("Тип — имя папки моделей в ComfyUI (loras, LLM, TTS, sam3…); дважды щёлкни, чтобы переименовать. «Ссылка» нужна нодам, которые ищут модели только в ComfyUI\\models и не читают yaml."), True))
+        trow = QHBoxLayout()
+        trow.addWidget(button(tr("＋ Тип вручную…"), self._mp_add_type))
+        trow.addStretch()
+        el.addLayout(trow)
+        self.chk_mp_default = QCheckBox(tr("Основная папка для загрузок (is_default) — сюда сохраняются новые модели"))
+        self.chk_mp_default.toggled.connect(lambda *_: self._mp_preview())
+        el.addWidget(self.chk_mp_default)
+        srow = QHBoxLayout()
+        srow.addWidget(button(tr("Сохранить"), self._mp_save, "Accent"))
+        srow.addWidget(button(tr("Отмена"), self._mp_close_editor))
+        srow.addStretch()
+        el.addLayout(srow)
+        self.mp_editor.setVisible(False)
+        mid.addWidget(self.mp_editor, 5)
+
+        right = QVBoxLayout()
+        right.setSpacing(14)
+        op, opl = panel(tr("Где ComfyUI будет искать модели"))
+        self.tree_mp_order = QTreeWidget()
+        self.tree_mp_order.setHeaderLabels([tr("Тип / папка"), tr("Откуда")])
+        self.tree_mp_order.setMinimumHeight(220)
+        oh = self.tree_mp_order.header()
+        oh.setStretchLastSection(False)
+        oh.setSectionResizeMode(0, QHeaderView.Stretch)
+        oh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        opl.addWidget(self.tree_mp_order, 1)
+        opl.addWidget(muted(tr("Если одинаковый файл есть в нескольких папках, ComfyUI берёт первый по списку."), True))
+        right.addWidget(op, 1)
+        yp, ypl = panel()
+        self.btn_mp_yaml = button("▸  " + tr("Предпросмотр extra_model_paths.yaml"))
+        self.btn_mp_yaml.setObjectName("Collapse")
+        self.btn_mp_yaml.setCheckable(True)
+        ypl.addWidget(self.btn_mp_yaml)
+        self.edit_mp_yaml = QPlainTextEdit()
+        self.edit_mp_yaml.setReadOnly(True)
+        self.edit_mp_yaml.setObjectName("Mono")
+        self.edit_mp_yaml.setMinimumHeight(220)
+        self.edit_mp_yaml.setVisible(False)
+        ypl.addWidget(self.edit_mp_yaml)
+        self.btn_mp_yaml.toggled.connect(lambda on: (self.edit_mp_yaml.setVisible(on),
+                                                     self.btn_mp_yaml.setText(("▾  " if on else "▸  ") + tr("Предпросмотр extra_model_paths.yaml"))))
+        ypl.addWidget(muted(tr("Перед записью сохраняется копия extra_model_paths.yaml.bak. Секции, написанные вручную, не меняются, пока ты их не изменишь здесь."), True))
+        right.addWidget(yp)
+        mid.addLayout(right, 4)
+        lay.addLayout(mid, 4)
+
+        lp, lpl = panel(tr("Ссылки на папки — для нод, которые ищут модели только в ComfyUI\\models"))
+        self.tree_mp_links = QTreeWidget()
+        self.tree_mp_links.setHeaderLabels([tr("Ссылка в сборке"), tr("Куда ведёт"), tr("Статус")])
+        self.tree_mp_links.setRootIsDecorated(False)
+        self.tree_mp_links.setAlternatingRowColors(True)
+        self.tree_mp_links.setMinimumHeight(110)
+        lh = self.tree_mp_links.header()
+        lh.setStretchLastSection(False)
+        for c, mode in ((0, QHeaderView.Stretch), (1, QHeaderView.Stretch), (2, QHeaderView.ResizeToContents)):
+            lh.setSectionResizeMode(c, mode)
+        lpl.addWidget(self.tree_mp_links, 1)
+        lrow = QHBoxLayout()
+        lrow.addWidget(button(tr("＋ Создать ссылку…"), self._mp_new_link))
+        lrow.addWidget(button(tr("Удалить ссылку"), self._mp_delete_link, "Danger"))
+        lrow.addWidget(muted(tr("Удаляется только ссылка — файлы в исходной папке остаются. Ссылки работают без прав администратора на локальных дисках."), True), 1)
+        lpl.addLayout(lrow)
+        lay.addWidget(lp, 2)
+
+        nrow = QHBoxLayout()
+        self.lbl_mp_restart = QLabel(tr("● ComfyUI запущен — изменения вступят в силу после перезапуска"))
+        self.lbl_mp_restart.setStyleSheet(f"color: {C['PINK']};")
+        self.btn_mp_restart = button(tr("Перезапустить ComfyUI"), self.restart_comfy)
+        nrow.addWidget(self.lbl_mp_restart)
+        nrow.addWidget(self.btn_mp_restart)
+        nrow.addStretch()
+        lay.addLayout(nrow)
+        for tree in (self.tree_mp, self.tree_mp_types, self.tree_mp_order, self.tree_mp_links):
+            fill_header_over_scrollbar(tree)
+        self._mp_render()
+        return page
+
+    @property
+    def _mp_yaml(self):
+        return self.comfy / "extra_model_paths.yaml"
+
+    def _mp_text(self):
+        try:
+            return self._mp_yaml.read_text(encoding="utf-8", errors="replace") if self._mp_yaml.is_file() else ""
+        except OSError:
+            return ""
+
+    def _mp_refresh(self):
+        """Перечитать yaml и ссылки; наличие папок и число файлов — в фоне."""
+        if not self.root:
+            return
+        sections = modelpaths.parse(self._mp_text(), str(self.comfy))
+        self._mp_sections = sections
+        self._mp_seq += 1
+        seq = self._mp_seq
+        self._mp_render()
+        run_in_thread(self._bridge, ("mp_status", seq),
+                      lambda: {s["key"]: modelpaths.section_status(s) for s in sections})
+
+    def _on_mp_status(self, seq, result, error):
+        if seq != self._mp_seq or error is not None:
+            return
+        self._mp_status = result
+        self._mp_render()
+
+    def _mp_render(self):
+        if not hasattr(self, "tree_mp"):
+            return
+        keep = self._mp_selected_key()
+        self.tree_mp.clear()
+        for s in self._mp_sections:
+            rows, base_ok = self._mp_status.get(s["key"], (None, None))
+            if rows is None:
+                what = " · ".join(t for t, _ in s["entries"])
+                status, color = tr("проверяю…"), C["MUTED"]
+            else:
+                counts = {}
+                for t, _p, ok, n in rows:
+                    counts[t] = counts.get(t, 0) + n
+                parts = [f"{t} {counts[t]}" for t in counts]
+                what = " · ".join(parts[:6]) + (f" · +{len(parts) - 6}" if len(parts) > 6 else "")
+                missing = [t for t, _p, ok, _n in rows if not ok]
+                total = sum(counts.values())
+                if not base_ok:
+                    status, color = tr("✗ папка недоступна"), C["RED"]
+                elif missing:
+                    status, color = tr("⚠ нет папок: {0}", ", ".join(missing[:3])), C["YELLOW"]
+                else:
+                    status, color = tr("✓ файлов: {0}", total), C["GREEN"]
+            if not s["enabled"]:
+                status, color = tr("выключено"), C["MUTED"]
+            title = s["title"] + ("  ★" if s["is_default"] else "") + ("" if s["managed"] else "  " + tr("(вручную)"))
+            it = QTreeWidgetItem([title, s["base"], what or "—", status])
+            it.setForeground(3, QColor(color))
+            if s["is_default"]:
+                it.setToolTip(0, tr("Основная папка для загрузок (is_default)"))
+            it.setData(0, Qt.UserRole, s["key"])
+            self.tree_mp.addTopLevelItem(it)
+            if s["key"] == keep:
+                it.setSelected(True)
+        self._mp_update_buttons()
+        self._mp_render_order()
+        self._mp_render_links()
+        if not self._mp_edit:
+            self.edit_mp_yaml.setPlainText(self._mp_text())
+        running = bool(self.running)
+        self.lbl_mp_restart.setVisible(running)
+        self.btn_mp_restart.setVisible(running)
+
+    def _mp_render_order(self):
+        self.tree_mp_order.clear()
+        if not self.root:
+            return
+        names = {"build": tr("сборка"), "link": tr("ссылка")}
+        for t, rows in modelpaths.search_order(self.comfy, self._mp_sections).items():
+            top = QTreeWidgetItem([t, ""])
+            for i, (p, src) in enumerate(rows, 1):
+                ch = QTreeWidgetItem([f"{i}. {p}", names.get(src, src)])
+                if not os.path.isdir(p):
+                    ch.setForeground(0, QColor(C["RED"]))
+                    ch.setToolTip(0, tr("Папка недоступна"))
+                top.addChild(ch)
+            self.tree_mp_order.addTopLevelItem(top)
+        self.tree_mp_order.expandAll()
+
+    def _mp_render_links(self):
+        self.tree_mp_links.clear()
+        if not self.root:
+            return
+        for link, target, ok in modelpaths.list_links(self.comfy):
+            rel = os.path.relpath(link, str(self.root))
+            it = QTreeWidgetItem([rel, target, tr("✓ работает") if ok else tr("✗ цель недоступна")])
+            it.setForeground(2, QColor(C["GREEN"] if ok else C["RED"]))
+            it.setData(0, Qt.UserRole, link)
+            self.tree_mp_links.addTopLevelItem(it)
+
+    def _mp_selected_key(self):
+        if not hasattr(self, "tree_mp"):
+            return None
+        items = self.tree_mp.selectedItems()
+        return items[0].data(0, Qt.UserRole) if items else None
+
+    def _mp_section(self, key):
+        return next((s for s in self._mp_sections if s["key"] == key), None)
+
+    def _mp_update_buttons(self):
+        s = self._mp_section(self._mp_selected_key())
+        for b in (self.btn_mp_edit, self.btn_mp_toggle, self.btn_mp_delete):
+            b.setEnabled(s is not None)
+        self.btn_mp_toggle.setText(tr("Включить") if s and not s["enabled"] else tr("Выключить"))
+
+    def _mp_write(self, text, what):
+        try:
+            modelpaths.write(self._mp_yaml, text)
+        except OSError as e:
+            QMessageBox.warning(self, APP_TITLE, tr("Не удалось записать extra_model_paths.yaml: {0}", e))
+            return False
+        self.console.system(tr("extra_model_paths.yaml: {0}", what))
+        if hasattr(self, "cb_dl_root"):   # вкладка «Загрузка моделей» сразу видит новые папки
+            self.dl_roots = self._load_model_roots()
+            self._fill_root_combo()
+        self._mp_refresh()
+        return True
+
+    def _mp_toggle(self):
+        s = self._mp_section(self._mp_selected_key())
+        if s:
+            self._mp_write(modelpaths.set_enabled(self._mp_text(), str(self.comfy), s["key"], not s["enabled"]),
+                           (tr("включено: {0}") if not s["enabled"] else tr("выключено: {0}")).format(s["title"]))
+
+    def _mp_delete(self):
+        s = self._mp_section(self._mp_selected_key())
+        if not s:
+            return
+        base = os.path.normcase(os.path.realpath(s["base"]))
+        links = [l for l, t, _ok in modelpaths.list_links(self.comfy)
+                 if t and os.path.normcase(os.path.realpath(t)).startswith(base)]
+        box = QMessageBox(self)
+        box.setWindowTitle(APP_TITLE)
+        box.setText(tr("Удалить источник «{0}» из extra_model_paths.yaml? Сами модели не удаляются.", s["title"]))
+        chk = None
+        if links:
+            chk = QCheckBox(tr("Удалить и ссылки на эту папку ({0})", len(links)))
+            chk.setChecked(True)
+            box.setCheckBox(chk)
+        yes = box.addButton(tr("Удалить"), QMessageBox.YesRole)
+        box.addButton(tr("Отмена"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        if chk is not None and chk.isChecked():
+            for l in links:
+                try:
+                    modelpaths.remove_link(l)
+                except (OSError, ValueError) as e:
+                    self.console.system(str(e), error=True)
+        if self._mp_edit and self._mp_edit.get("key") == s["key"]:
+            self._mp_close_editor()
+        self._mp_write(modelpaths.remove(self._mp_text(), str(self.comfy), s["key"]), tr("удалено: {0}", s["title"]))
+
+    def _mp_open_yaml(self):
+        if self._mp_yaml.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._mp_yaml)))
+        else:
+            QMessageBox.information(self, APP_TITLE, tr("Файла extra_model_paths.yaml пока нет — он появится после первого сохранения."))
+
+    # редактор источника
+    def _mp_add(self, build):
+        if not self.root:
+            return
+        d = QFileDialog.getExistingDirectory(self, tr("Другая сборка ComfyUI") if build else tr("Папка с моделями"), str(self.root.parent))
+        if not d:
+            return
+        info = modelpaths.detect(d)
+        if build and info["kind"] != "build":
+            if QMessageBox.question(self, APP_TITLE, tr("В этой папке не найдена сборка ComfyUI. Подключить её как обычную папку с моделями?")) != QMessageBox.Yes:
+                return
+        name = Path(info["base"]).parent.name if info["kind"] == "build" and Path(info["base"]).name.lower() == "comfyui" else Path(info["base"]).name
+        self._mp_open_editor(dict(key=None, title=name or "models", base=info["base"], kind=info["kind"],
+                                  rows=[dict(r, checked=bool(r["files"]) and bool(r["type"]), method=modelpaths.default_method(r["type"]))
+                                        for r in info["items"]], is_default=False, manual=False))
+
+    def _mp_edit_selected(self):
+        s = self._mp_section(self._mp_selected_key())
+        if not s:
+            return
+        info = modelpaths.detect(s["base"])
+        rows, seen = [], set()
+        for t, paths in s["entries"]:
+            for p in paths:
+                full = os.path.normpath(p if modelpaths._is_abs(p) else os.path.join(s["base"], p))
+                rows.append(dict(type=t, sub=p, path=full, files=modelpaths.count_files(full) if os.path.isdir(full) else 0,
+                                 checked=True, method=modelpaths.YAML))
+                seen.add(os.path.normcase(full))
+        for r in info["items"]:   # подпапки источника, которые ещё не подключены
+            if os.path.normcase(os.path.normpath(r["path"])) not in seen and r["type"]:
+                rows.append(dict(r, checked=False, method=modelpaths.default_method(r["type"])))
+        self._mp_open_editor(dict(key=s["key"], title=s["title"], base=s["base"], kind=info["kind"], rows=rows,
+                                  is_default=s["is_default"], manual=not s["managed"]))
+
+    def _mp_open_editor(self, ed):
+        self._mp_edit = ed
+        self.lbl_mp_editor.setText(tr("Источник: «{0}»", ed["title"]) if ed["key"] else tr("Новый источник"))
+        self.edit_mp_title.blockSignals(True)
+        self.edit_mp_title.setText(ed["title"])
+        self.edit_mp_title.blockSignals(False)
+        self.edit_mp_base.setText(ed["base"])
+        note = (tr("Определено: сборка ComfyUI — подпапки models\\… сопоставлены по именам.") if ed["kind"] == "build"
+                else tr("Обычная папка: каждая подпапка — отдельный тип моделей. Тип можно переименовать."))
+        if ed["manual"]:
+            note += " " + tr("Эта секция написана вручную: после сохранения лаунчер перепишет её в своём формате, комментарии внутри неё пропадут (копия — в .bak).")
+        self.lbl_mp_detect.setText(note)
+        self.chk_mp_default.blockSignals(True)
+        self.chk_mp_default.setChecked(ed["is_default"])
+        self.chk_mp_default.blockSignals(False)
+        self.tree_mp_types.blockSignals(True)
+        self.tree_mp_types.clear()
+        for r in ed["rows"]:
+            self._mp_add_row(r)
+        self.tree_mp_types.blockSignals(False)
+        self.mp_editor.setVisible(True)
+        self._mp_preview()
+
+    def _mp_add_row(self, r):
+        it = QTreeWidgetItem([r["type"], r["sub"], str(r["files"]), ""])
+        it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable)
+        it.setCheckState(0, Qt.Checked if r["checked"] else Qt.Unchecked)
+        it.setData(0, Qt.UserRole, r["path"])
+        it.setData(1, Qt.UserRole, r["sub"])
+        if not r["type"]:
+            it.setToolTip(0, tr("Укажи тип: дважды щёлкни и впиши имя папки моделей (например loras или TTS)."))
+            it.setForeground(0, QColor(C["YELLOW"]))
+        self.tree_mp_types.addTopLevelItem(it)
+        cb = NoWheelComboBox()
+        for label, data in ((tr("yaml"), modelpaths.YAML), (tr("ссылка"), modelpaths.LINK), (tr("yaml + ссылка"), modelpaths.BOTH)):
+            cb.addItem(label, data)
+        cb.setCurrentIndex(max(0, cb.findData(r["method"])))
+        cb.currentIndexChanged.connect(lambda *_: self._mp_preview())
+        self.tree_mp_types.setItemWidget(it, 3, cb)
+
+    def _mp_rows(self):
+        out = []
+        for i in range(self.tree_mp_types.topLevelItemCount()):
+            it = self.tree_mp_types.topLevelItem(i)
+            cb = self.tree_mp_types.itemWidget(it, 3)
+            out.append(dict(type=it.text(0).strip(), sub=it.data(1, Qt.UserRole), path=it.data(0, Qt.UserRole),
+                            checked=it.checkState(0) == Qt.Checked, method=cb.currentData() if cb else modelpaths.YAML))
+        return out
+
+    def _mp_pending(self):
+        """(новый текст yaml, строки для ссылок) по данным редактора."""
+        ed = self._mp_edit
+        text = self._mp_text()
+        rows = [r for r in self._mp_rows() if r["checked"] and r["type"]]
+        entries = {}
+        for r in rows:
+            if r["method"] in (modelpaths.YAML, modelpaths.BOTH):
+                entries.setdefault(r["type"], []).append(r["sub"])
+        title = self.edit_mp_title.text().strip() or Path(ed["base"]).name
+        key = ed["key"] or modelpaths.new_key(title, self._mp_sections)
+        if entries:
+            text = modelpaths.upsert(text, str(self.comfy), key, title, ed["base"], list(entries.items()),
+                                     self.chk_mp_default.isChecked())
+        elif ed["key"]:
+            text = modelpaths.remove(text, str(self.comfy), ed["key"])
+        links = [r for r in rows if r["method"] in (modelpaths.LINK, modelpaths.BOTH)]
+        return text, links, title
+
+    def _mp_preview(self):
+        if not self._mp_edit or not hasattr(self, "edit_mp_yaml"):
+            return
+        try:
+            self.edit_mp_yaml.setPlainText(self._mp_pending()[0])
+        except Exception as e:
+            self.edit_mp_yaml.setPlainText(str(e))
+
+    def _mp_browse_base(self):
+        if not self._mp_edit:
+            return
+        d = QFileDialog.getExistingDirectory(self, tr("Папка"), self._mp_edit["base"])
+        if d:
+            key = self._mp_edit["key"]
+            info = modelpaths.detect(d)
+            self._mp_open_editor(dict(self._mp_edit, base=info["base"], kind=info["kind"], key=key,
+                                      title=self.edit_mp_title.text().strip(),
+                                      rows=[dict(r, checked=bool(r["files"]) and bool(r["type"]),
+                                                 method=modelpaths.default_method(r["type"])) for r in info["items"]]))
+
+    def _mp_add_type(self):
+        if not self._mp_edit:
+            return
+        name, ok = QInputDialog.getText(self, APP_TITLE, tr("Тип моделей (имя папки в ComfyUI\\models), например TTS, LLM, sam3:"))
+        name = name.strip()
+        if not ok or not name:
+            return
+        d = QFileDialog.getExistingDirectory(self, tr("Папка с моделями этого типа"), self._mp_edit["base"])
+        if not d:
+            return
+        try:
+            sub = Path(d).resolve().relative_to(Path(self._mp_edit["base"]).resolve()).as_posix() + "/"
+        except ValueError:
+            sub = Path(d).as_posix() + "/"   # папка вне базовой — в yaml пишется абсолютный путь
+        self._mp_add_row(dict(type=name, sub=sub, path=d, files=modelpaths.count_files(d), checked=True,
+                              method=modelpaths.default_method(name)))
+        self._mp_preview()
+
+    def _mp_close_editor(self):
+        self._mp_edit = None
+        if hasattr(self, "mp_editor"):
+            self.mp_editor.setVisible(False)
+        self._mp_render()
+
+    def _mp_save(self):
+        ed = self._mp_edit
+        if not ed:
+            return
+        unnamed = [r for r in self._mp_rows() if r["checked"] and not r["type"]]
+        if unnamed:
+            QMessageBox.information(self, APP_TITLE, tr("Укажи тип для отмеченных строк без названия (дважды щёлкни по ячейке «Тип моделей»)."))
+            return
+        text, links, title = self._mp_pending()
+        made, problems = 0, []
+        for r in links:
+            link, mode = modelpaths.plan_link(self.comfy, r["type"], r["path"], title)
+            if mode == "exists":
+                continue
+            if mode == "subfolder":
+                problems.append(tr("{0}: папка ComfyUI\\models\\{0} уже не пустая — ссылка создана подпапкой {1}. Ноды с жёстко прописанным путём могут её не увидеть.", r["type"], Path(link).name))
+            try:
+                modelpaths.create_link(link, r["path"])
+                made += 1
+                self.console.system(tr("Ссылка создана: {0} → {1}", link, r["path"]))
+            except (OSError, ValueError) as e:
+                problems.append(tr("Не удалось создать ссылку {0}: {1}", link, e))
+        if text != self._mp_text():
+            if not self._mp_write(text, tr("сохранено: {0}", title)):
+                return
+        self._mp_close_editor()
+        self._mp_refresh()
+        msg = tr("Сохранено. Ссылок создано: {0}.", made)
+        if problems:
+            msg += "\n\n" + "\n".join(problems)
+        if self.running:
+            msg += "\n\n" + tr("ComfyUI запущен — изменения вступят в силу после перезапуска.")
+        QMessageBox.information(self, APP_TITLE, msg)
+
+    # ссылки вручную
+    def _mp_new_link(self):
+        if not self.root:
+            return
+        name, ok = QInputDialog.getText(self, APP_TITLE, tr("Тип моделей (имя папки в ComfyUI\\models), например TTS, LLM, sam3:"))
+        name = name.strip()
+        if not ok or not name:
+            return
+        d = QFileDialog.getExistingDirectory(self, tr("Папка, на которую будет вести ссылка"), str(self.root.parent))
+        if not d:
+            return
+        link, mode = modelpaths.plan_link(self.comfy, name, d, Path(d).parent.name or Path(d).name)
+        if mode == "exists":
+            QMessageBox.information(self, APP_TITLE, tr("Такая ссылка уже есть."))
+            return
+        try:
+            modelpaths.create_link(link, d)
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, APP_TITLE, tr("Не удалось создать ссылку {0}: {1}", link, e))
+            return
+        self.console.system(tr("Ссылка создана: {0} → {1}", link, d))
+        if mode == "subfolder":
+            QMessageBox.information(self, APP_TITLE, tr("{0}: папка ComfyUI\\models\\{0} уже не пустая — ссылка создана подпапкой {1}. Ноды с жёстко прописанным путём могут её не увидеть.", name, Path(link).name))
+        self._mp_refresh()
+
+    def _mp_delete_link(self):
+        items = self.tree_mp_links.selectedItems()
+        if not items:
+            return
+        link = items[0].data(0, Qt.UserRole)
+        if QMessageBox.question(self, APP_TITLE, tr("Удалить ссылку {0}? Файлы в папке, на которую она ведёт, останутся.", link)) != QMessageBox.Yes:
+            return
+        try:
+            modelpaths.remove_link(link)
+            self.console.system(tr("Ссылка удалена: {0}", link))
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, APP_TITLE, str(e))
+        self._mp_refresh()
+
+    # ── страница: бэкапы ──
+    # Логика — в nd_backup.py; здесь только интерфейс. Создание и восстановление идут в фоновом потоке,
+    # прогресс передаётся через словарь self._backup_job и опрашивается таймером.
+    def _page_backups(self):
+        page, lay = self._new_page(tr("Бэкапы"), tr("Точки восстановления сборки: код ComfyUI, кастом-ноды, Python-пакеты и настройки. Модели, input и output не сохраняются."))
+
+        sp, spl = panel(tr("Хранилище"))
+        row = QHBoxLayout()
+        self.edit_backup_dir = QLineEdit()
+        self.edit_backup_dir.setReadOnly(True)
+        row.addWidget(self.edit_backup_dir, 1)
+        row.addWidget(button(tr("Выбрать…"), self._choose_backup_dir))
+        row.addWidget(button(tr("По умолчанию"), self._reset_backup_dir))
+        row.addWidget(button(tr("Открыть"), self._open_backup_dir))
+        spl.addLayout(row)
+        krow = QHBoxLayout()
+        krow.addWidget(muted(tr("Хранить точек:"), False))
+        self.spin_backup_keep = QSpinBox()
+        self.spin_backup_keep.setRange(0, 999)
+        self.spin_backup_keep.setFixedWidth(80)
+        self.spin_backup_keep.setValue(int(self.cfg.get("backup_keep", 10)))
+        self.spin_backup_keep.setToolTip(tr("Старые точки удаляются автоматически после создания новой. 0 — без ограничения."))
+        self.spin_backup_keep.valueChanged.connect(lambda v: self._set_cfg("backup_keep", v))
+        krow.addWidget(self.spin_backup_keep)
+        krow.addWidget(muted(tr("(0 — без ограничения; старые удаляются после создания новой)"), False))
+        krow.addStretch()
+        spl.addLayout(krow)
+        self.lbl_backup_store = muted("", True)
+        spl.addWidget(self.lbl_backup_store)
+        lay.addWidget(sp)
+
+        np_, npl = panel(tr("Новая точка восстановления"))
+        nrow = QHBoxLayout()
+        self.edit_backup_label = QLineEdit()
+        self.edit_backup_label.setPlaceholderText(tr("Название (необязательно), например «перед обновлением нод»"))
+        nrow.addWidget(self.edit_backup_label, 1)
+        self.btn_backup_create = button(tr("Создать точку"), self._create_backup, "Accent")
+        nrow.addWidget(self.btn_backup_create)
+        npl.addLayout(nrow)
+        self.lbl_backup_estimate = QLabel(tr("Оценка размера появится после подсчёта файлов…"))
+        self.lbl_backup_estimate.setWordWrap(True)
+        self.lbl_backup_estimate.setTextFormat(Qt.RichText)
+        npl.addWidget(self.lbl_backup_estimate)
+        prow = QHBoxLayout()
+        self.backup_bar = QProgressBar()
+        self.backup_bar.setRange(0, 1000)
+        self.backup_bar.setTextVisible(False)
+        self.backup_bar.setFixedWidth(260)
+        self.lbl_backup_progress = QLabel("")
+        self.lbl_backup_progress.setObjectName("Mono")
+        self.lbl_backup_progress.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.btn_backup_cancel = button(tr("Отмена"), self._cancel_backup, "Danger")
+        prow.addWidget(self.backup_bar)
+        prow.addWidget(self.lbl_backup_progress, 1)
+        prow.addWidget(self.btn_backup_cancel)
+        npl.addLayout(prow)
+        lay.addWidget(np_)
+
+        lp, lpl = panel(tr("Точки восстановления"))
+        self.tree_backups = QTreeWidget()
+        self.tree_backups.setHeaderLabels([tr("Дата"), tr("Название"), "ComfyUI", tr("Ноды"), tr("Размер"), ""])
+        self.tree_backups.setRootIsDecorated(False)
+        self.tree_backups.setAlternatingRowColors(True)
+        self.tree_backups.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree_backups.setMinimumHeight(220)
+        h = self.tree_backups.header()
+        h.setStretchLastSection(False)   # иначе всё свободное место уходит последней колонке «Размер»
+        h.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        h.setSectionResizeMode(1, QHeaderView.Stretch)
+        fm = self.tree_backups.fontMetrics()
+        # ширина: не меньше заданной (на 100% масштабе), но не меньше текста — чтобы ничего не обрезалось
+        for c, base, sample in ((2, 190, "0.000.00 0000000"), (3, 95, tr("Ноды") + "000"), (4, 110, "000.0 " + tr("ГБ")),
+                                (5, 90, "")):   # последняя пустая колонка — отступ справа
+            h.setSectionResizeMode(c, QHeaderView.Fixed)
+            h.resizeSection(c, max(base, fm.horizontalAdvance(sample) + 36 if sample else base))
+        h.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.tree_backups.itemSelectionChanged.connect(self._update_backup_controls)
+        lpl.addWidget(self.tree_backups, 1)
+        brow = QHBoxLayout()
+        self.btn_backup_restore = button(tr("Восстановить…"), self._restore_backup, "Accent")
+        self.btn_backup_compare = button(tr("Сравнить"), self._compare_backups)
+        self.btn_backup_compare.setToolTip(tr("Одна выбранная точка сравнивается с текущим состоянием сборки, две — между собой."))
+        self.btn_backup_delete = button(tr("Удалить"), self._delete_backups, "Danger")
+        brow.addWidget(self.btn_backup_restore)
+        brow.addWidget(self.btn_backup_compare)
+        brow.addStretch()
+        brow.addWidget(button(tr("↻  Обновить"), self._refresh_backups))
+        brow.addWidget(self.btn_backup_delete)
+        lpl.addLayout(brow)
+        lay.addWidget(lp, 1)
+
+        if not hasattr(self, "_backup_timer"):
+            self._backup_job = None
+            self._backup_points = []
+            self._backup_estimate_seq = 0
+            self._backup_bypass = False
+            self._backup_timer = QTimer(self)
+            self._backup_timer.setInterval(250)
+            self._backup_timer.timeout.connect(self._poll_backup_job)
+        self._render_backups()
+        return page
+
+    def _backup_store(self):
+        if not self.root:
+            return None
+        custom = self.cfg.get("backup_dir") or ""
+        return Path(custom) if custom else backup.default_store(self.root)
+
+    def _open_backup_dir(self):
+        store = self._backup_store()
+        if store:
+            store.mkdir(parents=True, exist_ok=True)
+            reveal_in_explorer(store)
+
+    def _choose_backup_dir(self):
+        start = str(self._backup_store() or app_dir())
+        d = QFileDialog.getExistingDirectory(self, tr("Папка для бэкапов"), start)
+        if d:
+            self._set_cfg("backup_dir", d)
+            self._refresh_backups()
+
+    def _reset_backup_dir(self):
+        self._set_cfg("backup_dir", "")
+        self._refresh_backups()
+
+    def _backup_label(self, p):
+        reasons = {"manual": "", "before-update": tr("перед обновлением"), "before-restore": tr("перед восстановлением")}
+        label = p.get("label") or ""
+        why = reasons.get(p.get("reason", ""), "")
+        return " · ".join(x for x in (label, why) if x) or "—"
+
+    def _render_backups(self):
+        if not hasattr(self, "tree_backups"):
+            return
+        store = self._backup_store()
+        self.edit_backup_dir.setText(str(store) if store else "")
+        self.tree_backups.clear()
+        for p in self._backup_points:
+            created = (p.get("created") or "").replace("T", "  ")
+            comfy = (p.get("summary") or {}).get("comfy") or {}
+            nodes = (p.get("summary") or {}).get("nodes") or {}
+            ver = " ".join(x for x in (comfy.get("version", ""), (comfy.get("commit") or "")[:7]) if x)
+            st = p.get("stats") or {}
+            it = QTreeWidgetItem([created, self._backup_label(p), ver or "—", str(len(nodes)),
+                                  fmt_size(st.get("disk_bytes", st.get("bytes", 0)))])
+            it.setData(0, Qt.UserRole, p["id"])
+            new = st.get("new_bytes", 0)
+            it.setToolTip(4, tr("На диске (сжато): {0} · без сжатия: {1}", fmt_size(st.get("disk_bytes", 0)), fmt_size(st.get("bytes", 0)))
+                          + "\n" + tr("Новых данных в этой точке: {0} (на диске {1})", fmt_size(new), fmt_size(st.get("stored_bytes", new))))
+            self.tree_backups.addTopLevelItem(it)
+        self._update_backup_controls()
+
+    def _update_backup_controls(self):
+        if not hasattr(self, "tree_backups"):
+            return
+        busy = self._backup_job is not None
+        n = len(self.tree_backups.selectedItems())
+        self.btn_backup_create.setEnabled(not busy and bool(self.root))
+        self.btn_backup_restore.setEnabled(not busy and n == 1)
+        self.btn_backup_compare.setEnabled(not busy and n in (1, 2))
+        self.btn_backup_delete.setEnabled(not busy and n >= 1)
+        self.btn_backup_cancel.setEnabled(busy and self._backup_job.get("kind") == "create")
+        self.backup_bar.setVisible(busy)
+        if not busy:
+            self.lbl_backup_progress.setText("")
+
+    def _refresh_backups(self):
+        """Список точек и оценка размера новой точки (подсчёт файлов — в фоне)."""
+        store = self._backup_store()
+        if not store:
+            self._backup_points = []
+            self._render_backups()
+            return
+        root = self.root
+        self._backup_estimate_seq += 1
+        seq = self._backup_estimate_seq
+        if hasattr(self, "lbl_backup_estimate"):
+            self.lbl_backup_estimate.setText(tr("Считаю размер новой точки…"))
+
+        def work():
+            pts = backup.fill_disk_sizes(store, backup.list_points(store, root))
+            est = backup.estimate(root, store)
+            free, anchor = disk_free(store)
+            return pts, est, free, anchor, backup.store_size(store)
+        run_in_thread(self._bridge, ("backup_refresh", seq), work)
+
+    def _on_backup_refresh(self, seq, result, error):
+        if seq != self._backup_estimate_seq or not hasattr(self, "lbl_backup_estimate"):
+            return
+        if error is not None:
+            self.lbl_backup_estimate.setText(html.escape(tr("Не удалось оценить размер: {0}", error)))
+            return
+        pts, est, free, anchor, used = result
+        self._backup_points = pts
+        self._render_backups()
+        self.lbl_backup_store.setText(tr("Точек этой сборки: {0} · хранилище занимает {1}", len(pts), fmt_size(used)))
+        need = est["new_bytes"]
+        ok = free is None or free > need * 1.05 + 200 * 1024 * 1024
+        color = C["GREEN"] if ok else C["RED"]
+        disk = (tr("Диск {0}: свободно {1}", anchor, fmt_size(free)) if free is not None else tr("Свободное место неизвестно"))
+        self.lbl_backup_estimate.setText(
+            html.escape(tr("Сейчас в сборке {0} файлов, {1}. Новая точка запишет примерно {2} новых данных ({3} файлов) до сжатия — на диске они займут меньше, а неизменённые файлы берутся из прошлых точек.",
+                           est["files"], fmt_size(est["bytes"]), fmt_size(need), est["new_files"]))
+            + f'<br><span style="color:{color}">● ' + html.escape(disk)
+            + (" · " + html.escape(tr("места может не хватить")) if not ok else "") + "</span>")
+        self._backup_last_estimate = (need, free)
+
+    # запуск фоновой работы
+    def _start_backup_job(self, kind, fn, on_done):
+        job = dict(kind=kind, frac=0.0, text="", cancel=False, on_done=on_done)
+        self._backup_job = job
+
+        def work():
+            return fn(lambda frac, text: job.update(frac=frac, text=text), lambda: job["cancel"])
+        run_in_thread(self._bridge, ("backup_job", id(job)), work)
+        self._backup_timer.start()
+        self._update_backup_controls()
+        self._poll_backup_job()
+
+    def _poll_backup_job(self):
+        job = self._backup_job
+        if not job or not hasattr(self, "backup_bar"):
+            return
+        self.backup_bar.setValue(int(job["frac"] * 1000))
+        what = {"create": tr("Создаю точку"), "restore": tr("Восстанавливаю")}.get(job["kind"], "")
+        text = job["text"]
+        if text == "scan":
+            text = tr("подсчёт файлов…")
+        elif text == "summary":
+            text = tr("сохраняю список файлов…")
+        self.lbl_backup_progress.setText(f"{what} · {int(job['frac'] * 100)}% · {text}")
+
+    def _on_backup_job(self, job_id, result, error):
+        job = self._backup_job
+        if not job or id(job) != job_id:
+            return
+        self._backup_job = None
+        self._backup_timer.stop()
+        self._update_backup_controls()
+        job["on_done"](result, error)
+        self._refresh_backups()
+
+    def _cancel_backup(self):
+        if self._backup_job:
+            self._backup_job["cancel"] = True
+
+    def _backup_ready(self, what):
+        if not self.root:
+            QMessageBox.warning(self, APP_TITLE, tr('Сборка ComfyUI не найдена.'))
+            return False
+        if self._backup_job:
+            QMessageBox.information(self, APP_TITLE, tr("Дождись окончания работы с бэкапом."))
+            return False
+        if what == "restore" and (self.running or self.tasks.busy or self.transferring or self.dl_tasks.busy):
+            QMessageBox.information(self, APP_TITLE, tr("Для восстановления останови ComfyUI и дождись окончания обновлений, переноса и загрузок: их файлы будут заменены."))
+            return False
+        return True
+
+    def _make_backup(self, label, reason, on_done):
+        root, store = self.root, self._backup_store()
+        keep = int(self.cfg.get("backup_keep", 10))
+        self.console.system(tr("Создаю точку восстановления: {0}", store))
+        self._start_backup_job("create", lambda say, cancel: backup.create(root, store, label=label, reason=reason,
+                                                                           keep=keep, progress=say, cancel=cancel), on_done)
+
+    def _report_backup(self, result, error):
+        if error is not None:
+            msg = tr("Создание точки отменено.") if isinstance(error, backup.Cancelled) else tr("Не удалось создать точку: {0}", error)
+            self.console.system(msg, error=not isinstance(error, backup.Cancelled))
+            return False
+        st = result["stats"]
+        self.console.system(tr("Точка восстановления создана: {0} файлов, {1}; новых данных {2} (на диске {3}).",
+                               st["files"], fmt_size(st["bytes"]), fmt_size(st["new_bytes"]),
+                               fmt_size(st.get("stored_bytes", st["new_bytes"]))))
+        if st.get("errors"):
+            self.console.system(tr("Не удалось прочитать файлов: {0} — они не попали в точку.", st["errors"]), error=True)
+        return True
+
+    def _create_backup(self):
+        if not self._backup_ready("create"):
+            return
+        need, free = getattr(self, "_backup_last_estimate", (0, None))
+        if free is not None and need > free and QMessageBox.question(
+                self, APP_TITLE, tr("Места на диске может не хватить. Всё равно создать точку?")) != QMessageBox.Yes:
+            return
+        self._make_backup(self.edit_backup_label.text().strip(), "manual", self._report_backup)
+        self.edit_backup_label.clear()
+
+    def _backup_before_update(self, cont):
+        """Галочка на вкладке «Обновления»: сначала точка, потом cont(). True — обновление отложено до конца бэкапа."""
+        if self._backup_bypass or not self.cfg.get("backup_before_update", False):
+            return False
+        if not self._backup_ready("create"):
+            return True
+
+        def done(result, error):
+            ok = self._report_backup(result, error)
+            if not ok and QMessageBox.question(self, APP_TITLE, tr("Точку восстановления создать не удалось. Обновить без неё?")) != QMessageBox.Yes:
+                return
+            self._backup_bypass = True
+            try:
+                cont()
+            finally:
+                self._backup_bypass = False
+        self.go("backups")
+        self._make_backup("", "before-update", done)
+        return True
+
+    def _selected_backups(self):
+        ids = [it.data(0, Qt.UserRole) for it in self.tree_backups.selectedItems()]
+        by_id = {p["id"]: p for p in self._backup_points}
+        return sorted((by_id[i] for i in ids if i in by_id), key=lambda p: (p.get("created", ""), p.get("created_ns", 0)))
+
+    def _restore_backup(self):
+        pts = self._selected_backups()
+        if len(pts) != 1 or not self._backup_ready("restore"):
+            return
+        p = pts[0]
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("Восстановление"))
+        dlg.setMinimumWidth(560)
+        v = QVBoxLayout(dlg)
+        v.addWidget(muted(tr("Сборка вернётся к состоянию точки «{0}» от {1}. Отметь, что восстановить:",
+                             self._backup_label(p), (p.get("created") or "").replace("T", " ")), True))
+        names = {"comfy": tr("Код ComfyUI (вместе с папкой update)"), "nodes": tr("Кастом-ноды"),
+                 "python": tr("Python-пакеты (python_embeded)"), "user": tr("Настройки и воркфлоу (ComfyUI/user)")}
+        checks = {}
+        for area in backup.AREAS:
+            if area in p.get("areas", backup.AREAS):
+                c = QCheckBox(names[area])
+                c.setChecked(area != "user")
+                checks[area] = c
+                v.addWidget(c)
+        save_first = QCheckBox(tr("Сначала сохранить текущее состояние как точку"))
+        save_first.setChecked(True)
+        v.addWidget(save_first)
+        v.addWidget(muted(tr("Файлы, которых не было в точке (например, новые ноды), не удаляются, а переносятся в папку trash хранилища. Модели, input и output не затрагиваются."), True))
+        row = QHBoxLayout()
+        row.addStretch()
+        ok = button(tr("Восстановить"), dlg.accept, "Accent")
+        row.addWidget(ok)
+        row.addWidget(button(tr("Отмена"), dlg.reject))
+        v.addLayout(row)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        areas = tuple(a for a, c in checks.items() if c.isChecked())
+        if not areas:
+            return
+        root, store = self.root, self._backup_store()
+
+        def restore_done(result, error):
+            if error is not None:
+                self.console.system(tr("Восстановление не удалось: {0}", error), error=True)
+                QMessageBox.warning(self, APP_TITLE, tr("Восстановление не удалось: {0}", error))
+                return
+            self.console.system(tr("Восстановлено: заменено файлов {0}, перенесено в trash {1}.", result["written"], result["moved"]))
+            if result["trash"]:
+                self.console.system(tr("Лишние файлы: {0}", result["trash"]))
+            for e in result["errors"][:20]:
+                self.console.system(e, error=True)
+            if result["errors"]:
+                QMessageBox.warning(self, APP_TITLE, tr("Не удалось заменить файлов: {0}. Список — в консоли. Закрой программы, которые могут их держать, и повтори восстановление.", len(result["errors"])))
+            else:
+                QMessageBox.information(self, APP_TITLE, tr("Сборка восстановлена."))
+            self.refresh_nodes()
+
+        def start_restore(_result=None, _error=None):
+            if _error is not None and not self._report_backup(_result, _error):
+                if QMessageBox.question(self, APP_TITLE, tr("Не удалось сохранить текущее состояние. Восстановить без этого?")) != QMessageBox.Yes:
+                    return
+            self.console.system(tr("Восстанавливаю сборку из точки {0}…", p["id"]))
+            self._start_backup_job("restore", lambda say, cancel: backup.restore(root, store, p["id"], areas, progress=say),
+                                   restore_done)
+        if save_first.isChecked():
+            self._make_backup("", "before-restore", lambda r, e: (self._report_backup(r, e) if e is None else None, start_restore(r, e)))
+        else:
+            start_restore()
+
+    def _compare_backups(self):
+        pts = self._selected_backups()
+        if len(pts) not in (1, 2):
+            return
+        old = pts[0]
+        if len(pts) == 2:
+            new, title_new = pts[1].get("summary") or {}, (pts[1].get("created") or "").replace("T", " ")
+        else:
+            new, title_new = backup.summary(self.root), tr("сейчас")
+        d = backup.diff(old.get("summary") or {}, new)
+        esc = html.escape
+        parts = [f'<h3>{esc((old.get("created") or "").replace("T", " "))} → {esc(title_new)}</h3>']
+        if d["comfy"]:
+            parts.append(f'<p><b>ComfyUI:</b> {esc(d["comfy"]["old"])} → {esc(d["comfy"]["new"])}</p>')
+        n = d["nodes"]
+        rows = ([f'<span style="color:{C["GREEN"]}">+ {esc(x)}</span>' for x in n["added"]]
+                + [f'<span style="color:{C["RED"]}">− {esc(x)}</span>' for x in n["removed"]]
+                + [f'{esc(a)}: {esc(b or "—")} → {esc(c or "—")}' for a, b, c in n["changed"]]
+                + [f'{esc(a)}: ' + (tr("включена") if on else tr("отключена")) for a, on in n["toggled"]])
+        if rows:
+            parts.append(f'<p><b>{esc(tr("Кастом-ноды"))}:</b><br>' + "<br>".join(rows) + "</p>")
+        k = d["packages"]
+        rows = ([f'<span style="color:{C["GREEN"]}">+ {esc(a)} {esc(b)}</span>' for a, b in k["added"]]
+                + [f'<span style="color:{C["RED"]}">− {esc(a)} {esc(b)}</span>' for a, b in k["removed"]]
+                + [f'{esc(a)}: {esc(b)} → {esc(c)}' for a, b, c in k["changed"]])
+        if rows:
+            parts.append(f'<p><b>{esc(tr("Python-пакеты"))}:</b><br>' + "<br>".join(rows) + "</p>")
+        if len(parts) == 1:
+            parts.append(f"<p>{esc(tr('Версии ComfyUI, нод и пакетов не отличаются.'))}</p>")
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("Сравнение точек"))
+        dlg.resize(720, 560)
+        v = QVBoxLayout(dlg)
+        tb = QTextBrowser()
+        tb.setHtml("".join(parts))
+        v.addWidget(tb)
+        v.addWidget(button(tr("Закрыть"), dlg.accept), 0, Qt.AlignRight)
+        dlg.exec()
+
+    def _delete_backups(self):
+        pts = self._selected_backups()
+        if not pts or not self._backup_ready("delete"):
+            return
+        if QMessageBox.question(self, APP_TITLE, tr("Удалить выбранные точки ({0})? Файлы, которые нужны другим точкам, останутся.", len(pts))) != QMessageBox.Yes:
+            return
+        store = self._backup_store()
+
+        def work(say, cancel):
+            for p in pts:
+                backup.delete_point(store, p["id"], collect=False)
+            return backup.gc(store)
+        self._start_backup_job("delete", work, lambda freed, e: self.console.system(
+            tr("Удалено точек: {0}, освобождено {1}.", len(pts), fmt_size(freed or 0)) if e is None else tr("Ошибка удаления: {0}", e), error=e is not None))
+
     # ── страница: настройки ──
     def _page_settings(self):
         page, lay = self._new_page(tr('Настройки'), tr('Путь к сборке ComfyUI. Настройки сохраняются в nd_launcher.json рядом с лаунчером.'))
@@ -4470,7 +5627,13 @@ class MainWindow(QMainWindow):
         self.chk_launcher_updates = QCheckBox(tr('Проверять обновления лаунчера при запуске'))
         self.chk_launcher_updates.setChecked(bool(self.cfg.get("check_launcher_updates", True)))
         self.chk_launcher_updates.toggled.connect(self._on_launcher_updates_toggled)
-        bl.addWidget(self.chk_launcher_updates)
+        urow = QHBoxLayout()
+        urow.addWidget(self.chk_launcher_updates)
+        urow.addStretch()
+        self.btn_check_updates = button(tr("Проверить обновления"), self.check_launcher_update_now)
+        self.btn_check_updates.setToolTip(tr("Проверить сейчас, есть ли новая версия на GitHub (работает и при выключенной автопроверке)."))
+        urow.addWidget(self.btn_check_updates)
+        bl.addLayout(urow)
         bl.addWidget(muted(tr('Проверка выполняется в фоне. Ссылка на новую версию появляется над кнопкой «Запустить».')))
         self.chk_tray = QCheckBox(tr('Сворачивать в трей'))
         self.chk_tray.setChecked(bool(self.cfg.get("minimize_to_tray")))
@@ -4478,6 +5641,22 @@ class MainWindow(QMainWindow):
         bl.addWidget(self.chk_tray)
         bl.addWidget(muted(tr('При сворачивании окно прячется в значок у часов, ComfyUI продолжает работать. Клик по значку открывает лаунчер, правый клик — меню. Ярлык с «Запускать в свёрнутом виде» при этой настройке стартует сразу в трее.')))
         lay.addWidget(bp)
+
+        fp, fl = panel(tr("Фокус-режим"))
+        fl.addWidget(muted(tr("Отметь вкладки, которые остаются в меню, когда в шапке включён «Фокус-режим». «Настройки» остаются всегда.")))
+        fgrid = QGridLayout()
+        fgrid.setHorizontalSpacing(18)
+        fgrid.setVerticalSpacing(8)
+        self.focus_checks = {}
+        chosen = self._focus_pages()
+        for n, (key, title, _icon, _scroll) in enumerate([p for p in PAGES if p[0] not in self.FOCUS_ALWAYS]):
+            c = QCheckBox(tr(title).replace("&", "&&"))
+            c.setChecked(key in chosen)
+            c.toggled.connect(self._on_focus_pages_changed)
+            self.focus_checks[key] = c
+            fgrid.addWidget(c, n // 3, n % 3)
+        fl.addLayout(fgrid)
+        lay.addWidget(fp)
 
         tp, tl = panel(tr("Оформление"))
         trow = QHBoxLayout()
@@ -4968,7 +6147,7 @@ class MainWindow(QMainWindow):
         if self.running:
             QMessageBox.information(self, APP_TITLE, tr('Сначала останови ComfyUI — {0} на ходу нельзя.', what))
             return False
-        if self.tasks.busy or self.transferring:
+        if self.tasks.busy or self.transferring or getattr(self, "_backup_job", None):
             QMessageBox.information(self, APP_TITLE, tr('Дождись окончания текущей операции.'))
             return False
         return True
@@ -4993,6 +6172,8 @@ class MainWindow(QMainWindow):
 
     def update_comfy(self, with_deps):
         if not self._ensure_idle():
+            return
+        if self._backup_before_update(lambda: self.update_comfy(with_deps)):
             return
         upd = self.root / "update"
         scripts = (["update_comfyui_and_python_dependencies.bat"] if with_deps else [])
@@ -6086,6 +7267,16 @@ class MainWindow(QMainWindow):
                 pass
 
     def closeEvent(self, e):
+        job = getattr(self, "_backup_job", None)
+        if job:   # прерванное восстановление оставит сборку наполовину старой — не даём закрыть
+            if job["kind"] != "create":
+                QMessageBox.information(self, APP_TITLE, tr("Идёт работа с бэкапом — дождись окончания."))
+                e.ignore()
+                return
+            if QMessageBox.question(self, APP_TITLE, tr("Идёт создание точки восстановления. Прервать и выйти?")) != QMessageBox.Yes:
+                e.ignore()
+                return
+            job["cancel"] = True
         if self.running or self.tasks.busy or self.transferring or self.dl_tasks.busy:
             what = (tr('ComfyUI ещё работает') if self.running else
                     tr('Идёт перенос файлов') if self.transferring else

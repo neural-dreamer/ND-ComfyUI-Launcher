@@ -3,6 +3,22 @@
 All notable changes to ND · ComfyUI Launcher. Versions follow [Semantic Versioning](https://semver.org).
 Each version's section is used as the notes of its GitHub release.
 
+## [1.2.0] — 2026-10-25
+
+Restore points for the build, a visual editor for model paths, and Focus mode.
+
+### Added
+- **Backups** tab: restore points for the build — ComfyUI code (with `.git` and the `update` folder), custom nodes, Python packages in `python_embeded` and `ComfyUI/user`. Works offline. Files are stored once by SHA-256 and compressed (already compressed formats such as `.zip`, `.whl`, `.png` are kept as is), so only the first point is a full copy. Shows the estimated size of a new point and the free space on the target disk; points can be compared (ComfyUI version, node commits, package versions) and restored fully or by area. Restore verifies every file's SHA-256; files that were not in the point are moved to the storage `trash` folder, not deleted. Storage defaults to `Backups` inside the build and can be changed; old points are pruned automatically (10 kept by default). Models, input and output are not included.
+- “Create a restore point before updating” option on the Updates tab (off by default).
+- **Model paths** tab: visual editor for `extra_model_paths.yaml` — connect another ComfyUI build or any model folder, choose model types (including node folders such as LLM, TTS, sam3) and how each is connected: yaml, a folder link (junction, no admin rights) for nodes that only look in `ComfyUI\models`, or both. Sources can be disabled, edited and removed; hand-written sections are kept, a `.bak` copy is saved before every write, and the tab shows where ComfyUI will look for each model type.
+- **Focus mode** switch in the header: shows only the tabs chosen in Settings → Focus mode (by default Console, Workflows and Model downloads); Settings always stay visible, and launch stays on the sidebar button. Styled like the browser extension switch; remembered between runs.
+- **Check for updates** button in Settings → Launcher behavior: checks GitHub right away and reports the result (works even with automatic checks turned off).
+
+### Fixed
+- The launcher update check no longer reports an error when one of its two sources (latest release or `VERSION` in `main`) fails but the other answers.
+- README: the “Run without an exe” instructions list all required files.
+- Browser extension: **Check connection** now runs from the extension page, so Chrome can ask for local network access, and a failed connection shows what to check instead of “Failed to fetch”.
+
 ## [1.1.3] — 2026-10-24
 
 Browser model downloads, optional post-update commands, and clearer download progress.

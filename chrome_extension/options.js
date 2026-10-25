@@ -124,9 +124,13 @@ document.getElementById('save').onclick = async () => {
 };
 document.getElementById('ping').onclick = async () => {
   try {
-    await chrome.storage.local.set({token:token.value.trim(),enabled:enabled.checked});
-    const r = await chrome.runtime.sendMessage({action:'ping'});
-    setStatus(r.ok ? 'Связь установлена. ND Launcher ' + r.version : r.error);
+    const key = token.value.trim();
+    await chrome.storage.local.set({token:key,enabled:enabled.checked});
+    if (!key) throw new Error('Сначала укажите ключ подключения.');
+    // Ping from the page, not the service worker: only a page can show Chrome's
+    // local network access prompt, and the granted permission then covers the worker.
+    const r = await bridgeFetch('ping', {}, key);
+    setStatus('Связь установлена. ND Launcher ' + r.version);
   } catch(error) { setStatus(error.message); }
 };
 document.getElementById('retry').onclick = async () => {

@@ -95,6 +95,18 @@ const ND_TRANSLATIONS = {
     "en": "Checking pending transfers…",
     "zh": "正在检查待传输任务…"
   },
+  "Лаунчер не отвечает. Проверьте, что он запущен и в его настройках включён приём загрузок из браузера. Если всё включено, разрешите расширению доступ к локальной сети: chrome://extensions → ND Launcher → Сведения → Настройки сайтов.": {
+    "en": "The launcher is not responding. Make sure it is running and browser downloads are enabled in its settings. If they are, allow the extension local network access: chrome://extensions → ND Launcher → Details → Site settings.",
+    "zh": "启动器没有响应。请确认启动器正在运行，并已在设置中开启接收浏览器下载。如果已开启，请允许扩展访问本地网络：chrome://extensions → ND Launcher → 详情 → 网站设置。"
+  },
+  "Лаунчер не ответил вовремя.": {
+    "en": "The launcher did not respond in time.",
+    "zh": "启动器未及时响应。"
+  },
+  "На порту 17863 отвечает другая программа, а не ND Launcher.": {
+    "en": "Another program, not ND Launcher, is answering on port 17863.",
+    "zh": "端口 17863 上响应的是其他程序，而不是 ND Launcher。"
+  },
   "Сначала укажите ключ подключения.": {
     "en": "Enter the connection key first.",
     "zh": "请先输入连接密钥。"

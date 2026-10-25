@@ -2,7 +2,8 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const assert=require('node:assert/strict');
 const {webcrypto}=require('node:crypto');
-const source=fs.readFileSync(require('node:path').join(__dirname,'../chrome_extension/background.js'),'utf8');
+const dir=require('node:path').join(__dirname,'../chrome_extension');
+const source=fs.readFileSync(dir+'/background.js','utf8');
 function setup({failPrepare=false,failCommit=false,offline=false,item={}}={}) {
   const calls=[], store={enabled:true,token:'test-key'};
   let download={id:1,url:'https://civitai.red/api/download/models/1',finalUrl:'https://cdn.example.com/model',
@@ -11,11 +12,11 @@ function setup({failPrepare=false,failCommit=false,offline=false,item={}}={}) {
   const event=()=>({addListener:()=>{}});
   const chrome={
     storage:{local:{get:async keys=>keys===null?{...store}:Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,store[k]])),
-      set:async obj=>Object.assign(store,obj),remove:async key=>{delete store[key]}}},
+      set:async obj=>Object.assign(store,obj),remove:async key=>{delete store[key]}},onChanged:event()},
     downloads:{search:async()=>[{...download}],pause:async()=>{calls.push('pause');download.paused=true;},
       resume:async()=>{calls.push('resume');download.paused=false;},
       cancel:async()=>{calls.push('cancel');download.state='interrupted';},onChanged:event()},
-    action:{setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{}},alarms:{create:async()=>{},onAlarm:event()},
+    action:{setIcon:async()=>{},setBadgeText:async()=>{},setBadgeBackgroundColor:async()=>{}},alarms:{create:async()=>{},onAlarm:event()},
     runtime:{id:'a'.repeat(32),onInstalled:event(),onStartup:event(),onMessage:event()}
   };
   const context={chrome,URL,AbortSignal,crypto:webcrypto,console,fetch:async(url,options)=>{
@@ -24,6 +25,7 @@ function setup({failPrepare=false,failCommit=false,offline=false,item={}}={}) {
     const bad=(action==='prepare'&&failPrepare)||(action==='commit'&&failCommit);
     return {ok:!bad,json:async()=>bad?{ok:false,error:'test failure'}:{ok:true}};
   }};
+  context.importScripts=name=>vm.runInContext(fs.readFileSync(dir+'/'+name,'utf8'),context);
   vm.createContext(context);vm.runInContext(source,context);
   return {context,calls,store,download};
 }
@@ -52,5 +54,8 @@ function setup({failPrepare=false,failCommit=false,offline=false,item={}}={}) {
     t=setup({item:{url:'https://'+host+'.evil.org/file',referrer:''}});
     await t.context.handoff(1);assert.equal(t.calls.length,0);
   }
-  console.log('24 Chrome handoff scenarios passed');
+  t=setup({offline:true});await assert.rejects(t.context.bridgeFetch('ping',{},'k'),/Лаунчер не отвечает/);
+  t=setup();t.context.fetch=async()=>({ok:true,json:async()=>{throw new SyntaxError('html');}});
+  await assert.rejects(t.context.bridgeFetch('ping',{},'k'),/другая программа/);
+  console.log('26 Chrome handoff scenarios passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -33,8 +33,10 @@
   - 文件通过最多 16 个并行连接直接下载到所选文件夹，无需额外工具。Hugging Face 文件会进行 SHA-256 校验。
   - 也可选择使用官方的 `hf download`（Xet）下载 Hugging Face 文件。
   - 目标根目录可读取自 `extra_model_paths.yaml`。
+- **备份** — 整合包还原点：ComfyUI 代码、自定义节点（有无 git 均可）、`python_embeded` 中的 Python 包以及设置。每个文件只存储一次并经过压缩，因此只有第一个还原点是完整副本，而且占用空间明显小于整合包本身。创建前可看到还原点的大致大小以及磁盘空间是否足够。还原点可以相互比较（ComfyUI 版本、节点提交、包版本），并可全部或部分还原；旧还原点会自动删除。可选择在每次更新 ComfyUI 前自动创建还原点。不包含模型、input 和 output。
+- **模型路径** — 无需复制即可连接其他整合包和文件夹中的模型：`extra_model_paths.yaml` 可视化编辑器（支持任意类型：checkpoints、loras、LLM、TTS、sam3 以及节点创建的文件夹），并可为只在 `ComfyUI\models` 中查找模型的节点创建文件夹链接。可查看 ComfyUI 对每种模型类型的查找位置；手动编写的部分会保留，并备份 `.bak`。
 - **迁移** — 从另一个 ComfyUI 整合包迁移设置、工作流、模型、Input / Output、`extra_model_paths.yaml` 和自定义节点。缺少的节点会被自动识别。模型可复制、移动、瞬间建立硬链接，或不复制直接链接。
-- **便捷** — 3 种主题（霓虹、雾夜、经典）、3 种语言（中文、英文、俄文）、自选浏览器（含应用模式）、最小化到托盘、防止重复启动。
+- **便捷** — 标题栏中的“专注模式”开关只保留在“设置”中选定的标签页（“设置”本身始终显示）；3 种主题（霓虹、雾夜、经典）、3 种语言（中文、英文、俄文）、自选浏览器（含应用模式）、最小化到托盘、防止重复启动。
 
 <p align="center">
   <img src="docs/screenshots/transfer.png" width="49%" alt="迁移">
@@ -63,7 +65,7 @@
 
 ### 不使用 exe 运行
 
-将 `nd_launcher.py`、`nd_i18n.py`、`nd_icon.ico`、`brand\` 文件夹和 `ND_Launcher.bat` 复制到整合包根目录，然后运行 `ND_Launcher.bat`。首次启动时它会把 PySide6 安装到 `python_embeded`。
+将 `nd_launcher.py`、`nd_i18n.py`、`nd_browser.py`、`nd_extension_install.py`、`nd_backup.py`、`nd_modelpaths.py`、`nd_icon.ico`、`brand\` 和 `chrome_extension\` 文件夹以及 `ND_Launcher.bat` 复制到整合包根目录，然后运行 `ND_Launcher.bat`。首次启动时它会把 PySide6 安装到 `python_embeded`。
 
 **系统要求：** Windows 10 / 11（64 位）以及任何带 `python_embeded` 的 ComfyUI 便携版。可选：用于更新自定义节点的 [Git for Windows](https://git-scm.com)，以及用于 GPU 监控的 NVIDIA 显卡。
 

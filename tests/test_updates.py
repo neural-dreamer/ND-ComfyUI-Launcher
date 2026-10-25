@@ -34,7 +34,7 @@ class UpdateTests(unittest.TestCase):
     def setUp(self):
         self.ns = load_logic()
 
-    def check(self, release='v1.1.3', source='1.1.3', error=None):
+    def check(self, release='v1.1.3', source='1.1.3', error=None, source_error=None):
         def get(url, timeout):
             self.assertEqual(timeout, 10)
             if url.endswith('/releases/latest'):
@@ -42,6 +42,8 @@ class UpdateTests(unittest.TestCase):
                     raise error
                 result = {'tag_name': release}
             else:
+                if source_error:
+                    raise source_error
                 result = {'encoding': 'base64', 'content': base64.b64encode(
                     f'VERSION = "{source}"\n'.encode()).decode()}
             return json.dumps(result).encode(), {}
@@ -71,12 +73,19 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(self.check('v1.2.0', '1.3.0')['version'], '1.3.0')
 
     def test_api_failure(self):
+        # ошибка показывается, только если не ответил ни один источник
         with self.assertRaises(self.ns['HttpError']):
-            self.check(error=self.ns['HttpError'](403))
+            self.check(error=self.ns['HttpError'](403), source_error=self.ns['HttpError'](0))
+
+    def test_one_source_failing_is_not_an_error(self):
+        self.assertIsNone(self.check(error=self.ns['HttpError'](403)))
+        self.assertIsNone(self.check(source='garbage'))
+        self.assertEqual(self.check('v1.2.0', source='garbage')['version'], '1.2.0')
 
     def test_bad_source(self):
-        with self.assertRaises(ValueError):
-            self.check(source='garbage')
+        # нет релиза (сеть) и в исходнике нет VERSION — ошибка
+        with self.assertRaises((ValueError, self.ns['HttpError'])):
+            self.check(source='garbage', error=self.ns['HttpError'](0))
 
     def test_update_buttons(self):
         with tempfile.TemporaryDirectory(prefix='build with spaces ') as folder:
@@ -86,7 +95,7 @@ class UpdateTests(unittest.TestCase):
             for deps, script in [(False, 'update_comfyui_stable.bat'),
                                  (True, 'update_comfyui_and_python_dependencies.bat')]:
                 (upd / script).touch()
-                window = SimpleNamespace(root=root, _ensure_idle=lambda: True,
+                window = SimpleNamespace(root=root, _ensure_idle=lambda: True, _backup_before_update=lambda cont: False,
                                          tasks=Mock(), replace_example_image=Mock(), _post_update_steps=lambda kind: [])
                 self.ns['update_comfy'](window, deps)
                 steps = window.tasks.run.call_args.args[1]
@@ -101,14 +110,14 @@ class UpdateTests(unittest.TestCase):
             root=Path(folder)
             (root/'update').mkdir()
             (root/'update'/'update_comfyui_and_python_dependencies.bat').touch()
-            window=SimpleNamespace(root=root,_ensure_idle=lambda:True,tasks=Mock())
+            window=SimpleNamespace(root=root,_ensure_idle=lambda:True,_backup_before_update=lambda cont:False,tasks=Mock())
             self.ns['update_comfy'](window,True)
             window.tasks.run.assert_not_called()
             self.ns['QMessageBox'].warning.assert_called_once()
 
     def test_missing_script_does_not_update(self):
         with tempfile.TemporaryDirectory() as folder:
-            window = SimpleNamespace(root=Path(folder), _ensure_idle=lambda: True, tasks=Mock())
+            window = SimpleNamespace(root=Path(folder), _ensure_idle=lambda: True, _backup_before_update=lambda cont: False, tasks=Mock())
             self.ns['update_comfy'](window, False)
             window.tasks.run.assert_not_called()
             self.ns['QMessageBox'].warning.assert_called_once()

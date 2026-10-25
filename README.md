@@ -14,11 +14,9 @@
 
 </div>
 
-
+ND Launcher was originally developed for **Neural Dreamer** builds ([Patreon](https://www.patreon.com/neural_dreamer/posts/dreamer-build-171026216) · [Boosty](https://boosty.to/neural_dreamer/posts/8ab08a6b-3adc-4379-a8b9-93acc816d57d) — Dreamer Build Pro), but it is compatible with any portable ComfyUI build.
 
 No more `.bat` files and launch flags to remember. ND Launcher starts ComfyUI with the right settings, updates it and your custom nodes, installs new nodes and models, moves everything over from an old build, and keeps the console, GPU stats and your workflows in one place.
-
-Originally developed for **Neural Dreamer** builds (Dreamer Build Pro — [Patreon](https://www.patreon.com/neural_dreamer/posts/dreamer-build-171026216) · [Boosty](https://boosty.to/neural_dreamer/posts/8ab08a6b-3adc-4379-a8b9-93acc816d57d)), ND Launcher is compatible with **any portable ComfyUI** build.
 
 Browser extension: [installation and usage](BROWSER_EXTENSION.md).
 
@@ -35,8 +33,10 @@ Browser extension: [installation and usage](BROWSER_EXTENSION.md).
   - Files download straight into the chosen folder over up to 16 parallel connections, with no extra tools needed. Hugging Face files are verified with SHA-256.
   - Optionally, Hugging Face can use the official `hf download` with Xet instead.
   - Destination roots can come from your `extra_model_paths.yaml`.
+- **Backups** — restore points for the build: ComfyUI code, custom nodes (with or without git), Python packages in `python_embeded` and settings. Each file is stored once and compressed, so only the first point is a full copy, and it takes noticeably less space than the build itself. Before creating a point you see its approximate size and whether the disk has room. Points can be compared (ComfyUI version, node commits, package versions) and restored in part or in full; old points are removed automatically. Optionally, a point is created before every ComfyUI update. Models, input and output are not included.
+- **Model paths** — connect models from other builds and folders without copying: a visual editor for `extra_model_paths.yaml` (any model type — checkpoints, loras, LLM, TTS, sam3 or folders created by nodes), plus folder links for nodes that only look in `ComfyUI\models`. Shows where ComfyUI will look for each model type and keeps hand-written sections and a `.bak` copy.
 - **Transfer** — move settings, workflows, models, Input / Output, `extra_model_paths.yaml` and custom nodes from another ComfyUI build. Missing nodes are detected automatically. Models can be copied, moved, hard-linked instantly, or linked without copying.
-- **Comfort** — 3 themes (Neon, Foggy Night, Classic), 3 languages (English, Russian, Chinese), your browser of choice (or app mode), minimize to tray, single instance.
+- **Comfort** — a Focus mode switch in the header that leaves only the tabs you choose in Settings (Settings itself always stays); 3 themes (Neon, Foggy Night, Classic), 3 languages (English, Russian, Chinese), your browser of choice (or app mode), minimize to tray, single instance.
 
 <p align="center">
   <img src="docs/screenshots/transfer.png" width="49%" alt="Transfer">
@@ -65,7 +65,7 @@ The launcher is distributed as source code: you build `ND_Launcher.exe` on your 
 
 ### Run without an exe
 
-Copy `nd_launcher.py`, `nd_i18n.py`, `nd_icon.ico`, the `brand\` folder and `ND_Launcher.bat` into the root of your build and run `ND_Launcher.bat`. On first start it installs PySide6 into `python_embeded`.
+Copy `nd_launcher.py`, `nd_i18n.py`, `nd_browser.py`, `nd_extension_install.py`, `nd_backup.py`, `nd_modelpaths.py`, `nd_icon.ico`, the `brand\` and `chrome_extension\` folders and `ND_Launcher.bat` into the root of your build and run `ND_Launcher.bat`. On first start it installs PySide6 into `python_embeded`.
 
 **Requirements:** Windows 10 / 11 (64-bit) and any portable ComfyUI build with `python_embeded`. Optional: [Git for Windows](https://git-scm.com) for updating custom nodes, an NVIDIA GPU for the GPU monitor.
 
