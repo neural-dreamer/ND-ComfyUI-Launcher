@@ -138,4 +138,5 @@ document.getElementById('retry').onclick = async () => {
   try { await chrome.runtime.sendMessage({action:'retry'}); await refresh(); }
   catch(error) { setStatus(error.message); }
 };
+document.getElementById('version').textContent = chrome.runtime.getManifest().version;
 refresh().catch(error => setStatus(error.message));
