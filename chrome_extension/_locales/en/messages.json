@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "ND Launcher — Model Downloads"
+  },
+  "extDescription": {
+    "message": "Send model downloads from Hugging Face, Civitai and ModelScope to your local ND Launcher queue."
+  }
+}

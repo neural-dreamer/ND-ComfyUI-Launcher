@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "ND Launcher — 模型下载"
+  },
+  "extDescription": {
+    "message": "将 Hugging Face、Civitai 和 ModelScope 的模型下载交给本地 ND Launcher 的下载队列。"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "ND Launcher — загрузка моделей"
+  },
+  "extDescription": {
+    "message": "Передаёт загрузки моделей с Hugging Face, Civitai и ModelScope в очередь вашего локального ND Launcher."
+  }
+}
