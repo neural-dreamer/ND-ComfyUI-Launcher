@@ -96,13 +96,17 @@ class UpdateTests(unittest.TestCase):
                                  (True, 'update_comfyui_and_python_dependencies.bat')]:
                 (upd / script).touch()
                 window = SimpleNamespace(root=root, _ensure_idle=lambda: True, _backup_before_update=lambda cont: False,
-                                         tasks=Mock(), replace_example_image=Mock(), _post_update_steps=lambda kind: [])
+                                         tasks=Mock(), replace_example_image=Mock(), _post_update_steps=lambda kind: [],
+                                         cfg={'keep_cuda_torch': True}, _torch_version=lambda: '2.9.1+cu130',
+                                         _torch_guard=Mock())
                 self.ns['update_comfy'](window, deps)
                 steps = window.tasks.run.call_args.args[1]
                 self.assertEqual(steps[0][2], ['/d', '/c', f'call {script} nopause <nul'])
                 self.assertEqual(steps[0][3], upd)
                 batches = [step for step in steps if isinstance(step, tuple)]
                 self.assertEqual(len(batches), 2 if deps else 1)
+                # защита PyTorch добавляется только к «ComfyUI + зависимости»
+                self.assertEqual(sum(callable(step) for step in steps), 2 if deps else 1)
                 self.assertEqual(batches[-1][2], ['/d', '/c', 'call update_comfyui_stable.bat nopause <nul'])
 
     def test_dependencies_require_stable_batch_before_start(self):

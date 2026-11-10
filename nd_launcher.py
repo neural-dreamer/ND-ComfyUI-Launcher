@@ -111,7 +111,7 @@ def install_qt_translator(code):
 
 
 APP_TITLE = "ND · ComfyUI Launcher"
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 DEFAULT_PORT = 8188
 BRAND_NAME = "Neural Dreamer"
 REPO_URL = "https://github.com/neural-dreamer/ND-ComfyUI-Launcher"
@@ -1229,7 +1229,7 @@ DEFAULT_CONFIG = dict(
     minimize_to_tray=False, shortcut_name="ComfyUI Neural Dreamer", shortcut_minimized=False,
     arg_manager=True, arg_manager_legacy=False, arg_upload=True, legacy_ui_migrated=True,
     example_replace=True, example_custom="",
-    install_deps=True, install_history=[], lang="ru", theme=DEFAULT_THEME,
+    install_deps=True, install_history=[], keep_cuda_torch=True, lang="ru", theme=DEFAULT_THEME,
     backend_extract="auto", backend_options={},
 )
 
@@ -4309,6 +4309,12 @@ class MainWindow(QMainWindow):
         chk_backup.setChecked(bool(self.cfg.get("backup_before_update", False)))
         chk_backup.toggled.connect(lambda value: self._set_cfg("backup_before_update", value))
         cpl.addWidget(chk_backup)
+        chk_torch = QCheckBox(tr("Следить, чтобы PyTorch не потерял CUDA при обновлении зависимостей"))
+        chk_torch.setToolTip(tr("Штатный батник ставит PyTorch с PyPI вместе с индексом CUDA, и pip может выбрать версию без CUDA (только для процессора). "
+                                "После «ComfyUI + зависимости» лаунчер проверит PyTorch и, если CUDA пропала, вернёт сборку с тем же CUDA из индекса pytorch.org."))
+        chk_torch.setChecked(bool(self.cfg.get("keep_cuda_torch", True)))
+        chk_torch.toggled.connect(lambda value: self._set_cfg("keep_cuda_torch", value))
+        cpl.addWidget(chk_torch)
         lay.addWidget(cp)
 
         pp, ppl = panel()
@@ -7651,6 +7657,38 @@ class MainWindow(QMainWindow):
             return [lambda number=number, args=args: next_command(number, args) for number, args in commands]
         return [start_commands]
 
+    def _torch_version(self):
+        """Установленная версия torch (например 2.9.1+cu130) без его импорта; None, если не удалось узнать."""
+        try:
+            r = subprocess.run([str(self.python_exe), "-s", "-c", "import importlib.metadata as m; print(m.version('torch'))"],
+                               capture_output=True, text=True, timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            out = (r.stdout or "").strip().splitlines()
+            return out[-1].strip() if r.returncode == 0 and out else None
+        except Exception:
+            return None
+
+    def _torch_guard(self, before, tag):
+        """После обновления зависимостей: если PyTorch остался без CUDA (pip взял сборку с PyPI), возвращает версию с тем же CUDA."""
+        after = self._torch_version()
+        if after is None or re.search(r"\+cu\d+$", after):
+            if after:
+                self.console.system(tr("PyTorch: {0} → {1}", before, after))
+            return None
+        self.console.system(tr("PyTorch после обновления: {0} — без поддержки CUDA. Возвращаю сборку {1} из индекса pytorch.org.", after, tag), error=True)
+        return [(tr("Возврат PyTorch с CUDA ({0})", tag), self.python_exe,
+                 ["-s", "-m", "pip", "install", "--force-reinstall", "--no-deps", "torch", "torchvision", "torchaudio",
+                  "--index-url", f"https://download.pytorch.org/whl/{tag}"], self.root),
+                lambda: self._torch_after_repair(before, tag)]
+
+    def _torch_after_repair(self, before, tag):
+        now = self._torch_version()
+        if now and re.search(r"\+cu\d+$", now):
+            self.console.system(tr("PyTorch: {0} → {1}", before, now))
+        else:
+            self.console.system(tr("PyTorch так и остался без CUDA ({0}). Запусти вручную: python_embeded\\python.exe -s -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/{1}", now or "?", tag), error=True)
+            self.tasks.errors += 1
+        return None
+
     def update_comfy(self, with_deps):
         if not self._ensure_idle():
             return
@@ -7669,6 +7707,11 @@ class MainWindow(QMainWindow):
         steps = [(tr('Обновление ComfyUI'), cmd,
                   ["/d", "/c", f"call {script} nopause <nul"], upd) for script in scripts]
         steps.append(self.replace_example_image)
+        if with_deps and self.cfg.get("keep_cuda_torch", True):
+            before = self._torch_version()
+            m = re.search(r"\+(cu\d+)$", before or "")
+            if m:
+                steps.append(lambda b=before, t=m.group(1): self._torch_guard(b, t))
         try:
             steps += self._post_update_steps("comfy")
         except ValueError as exc:

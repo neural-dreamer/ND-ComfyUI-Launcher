@@ -3,6 +3,13 @@
 All notable changes to ND · ComfyUI Launcher. Versions follow [Semantic Versioning](https://semver.org).
 Each version's section is used as the notes of its GitHub release.
 
+## [1.3.1] — 2026-11-10
+
+Fix: PyTorch could lose CUDA after “ComfyUI + dependencies”.
+
+### Fixed
+- **Update tab → ComfyUI + dependencies** could leave PyTorch without CUDA (a CPU-only build, ComfyUI then stops with "Torch not compiled with CUDA enabled"). The stock batch file installs PyTorch from PyPI together with the CUDA index, and pip may pick the PyPI build. The launcher now remembers the CUDA tag of the installed PyTorch, checks it after the update and, if CUDA is gone, reinstalls the build with the same CUDA from the pytorch.org index. Can be switched off with a checkbox on the Updates tab.
+
 ## [1.3.0] — 2026-11-10
 
 Install a workflow together with its nodes and models, a progress bar with reconnect for installs, and an experimental NVIDIA ⇄ AMD platform switch.
