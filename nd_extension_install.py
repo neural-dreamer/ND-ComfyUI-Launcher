@@ -4,6 +4,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
+
+# Official listing in the Chrome Web Store (the ID alone is enough; no tracking parameters).
+STORE_URL = 'https://chromewebstore.google.com/detail/ikiegihpjhkejmbbbdiiombnaihannca'
 
 
 def load_catalog(source):
@@ -56,3 +60,18 @@ def prepare_extension(source, local_appdata):
     if source.resolve() != target.resolve():
         shutil.copytree(source, target, dirs_exist_ok=True)
     return target
+
+
+def needs_store_addon(spec):
+    """Opera cannot install from the Chrome Web Store without its own add-on."""
+    return bool(spec) and spec.get('id') == 'opera'
+
+
+def open_store_page(exe, url=STORE_URL):
+    """Open the store page in the given browser (a new tab if it is already running)."""
+    if not Path(exe).is_file():
+        raise FileNotFoundError(exe)
+    kwargs = {}
+    if os.name == 'nt':
+        kwargs['creationflags'] = 0x00000008  # DETACHED_PROCESS: the browser must outlive the launcher
+    subprocess.Popen([str(exe), url], close_fds=True, **kwargs)

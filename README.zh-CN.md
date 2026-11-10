@@ -18,7 +18,7 @@
 
 不再需要编辑 `.bat` 文件，也不用记住启动参数。ND Launcher 会用合适的设置启动 ComfyUI，更新 ComfyUI 和自定义节点，安装新节点和模型，从旧整合包迁移全部内容，并把控制台、显卡监控和工作流集中在一个窗口里。
 
-浏览器扩展：[安装与使用](BROWSER_EXTENSION.zh-CN.md)。
+适用于基于 Chromium 的浏览器的官方扩展：[从 Chrome 应用商店安装](https://chromewebstore.google.com/detail/ikiegihpjhkejmbbbdiiombnaihannca) · [使用说明](BROWSER_EXTENSION.zh-CN.md)。
 
 ![ND Launcher](docs/screenshots/launch.png)
 
@@ -26,13 +26,14 @@
 
 - **启动** — 内置预设（标准、节省显存、最高速度、视频与大模型、仅 CPU），也可保存自己的预设。显存模式、attention（SageAttention、FlashAttention）、fp8 / fp16、预留显存、局域网访问和端口都以简单选项呈现。一键创建桌面快捷方式，可直接启动 ComfyUI，也可最小化到托盘启动。
 - **控制台** — 在窗口内显示 ComfyUI 输出并高亮错误，显示生成进度，以及显卡监控（显存、占用、温度）。
-- **工作流** — 整合包中的全部工作流，支持搜索，并有描述面板：用途、使用方法、所需模型，并检查哪些模型已经存在。
+- **工作流** — 整合包中的全部工作流，支持搜索，并有描述面板：用途、使用方法、所需模型，并检查哪些模型已经存在。拖入 `.json` 文件或 `.zip` 压缩包，即可连同所需的自定义节点和模型一并安装工作流。
 - **更新** — 一键更新 ComfyUI（可选是否安装依赖）和全部自定义节点；无需删除即可启用或禁用节点。
-- **安装节点** — 粘贴一个或多个仓库链接（GitHub、GitLab、分支，或简写 `作者/仓库`），节点会被克隆，依赖会自动安装。
+- **安装节点** — 粘贴一个或多个仓库链接（GitHub、GitLab、分支，或简写 `作者/仓库`），节点会被克隆，依赖会自动安装；显示进度和速度，下载卡住时可使用“重新连接”和“跳过此步”按钮。
 - **模型下载** — 粘贴 Hugging Face 或 Civitai 链接，选择文件和目标文件夹，开始前即可查看磁盘剩余空间。下载可以暂停和继续，即使重启启动器后也可以。
   - 文件通过最多 16 个并行连接直接下载到所选文件夹，无需额外工具。Hugging Face 文件会进行 SHA-256 校验。
   - 也可选择使用官方的 `hf download`（Xet）下载 Hugging Face 文件。
   - 目标根目录可读取自 `extra_model_paths.yaml`。
+- **平台（实验性）** — 在“启动”页将便携整合包在 NVIDIA (CUDA) 与 AMD (ROCm) 之间切换。第二个 `python_embeded` 环境取自 ComfyUI 官方压缩包并并存保留；模型、自定义节点、工作流、input 和 output 都不受影响，切换失败会自动回滚。仅限 Windows；尚未在真实 Radeon 上测试。
 - **备份** — 整合包还原点：ComfyUI 代码、自定义节点（有无 git 均可）、`python_embeded` 中的 Python 包以及设置。每个文件只存储一次并经过压缩，因此只有第一个还原点是完整副本，而且占用空间明显小于整合包本身。创建前可看到还原点的大致大小以及磁盘空间是否足够。还原点可以相互比较（ComfyUI 版本、节点提交、包版本），并可全部或部分还原；旧还原点会自动删除。可选择在每次更新 ComfyUI 前自动创建还原点。不包含模型、input 和 output。
 - **模型路径** — 无需复制即可连接其他整合包和文件夹中的模型：`extra_model_paths.yaml` 可视化编辑器（支持任意类型：checkpoints、loras、LLM、TTS、sam3 以及节点创建的文件夹），并可为只在 `ComfyUI\models` 中查找模型的节点创建文件夹链接。可查看 ComfyUI 对每种模型类型的查找位置；手动编写的部分会保留，并备份 `.bak`。
 - **迁移** — 从另一个 ComfyUI 整合包迁移设置、工作流、模型、Input / Output、`extra_model_paths.yaml` 和自定义节点。缺少的节点会被自动识别。模型可复制、移动、瞬间建立硬链接，或不复制直接链接。
@@ -65,13 +66,13 @@
 
 ### 不使用 exe 运行
 
-将 `nd_launcher.py`、`nd_i18n.py`、`nd_browser.py`、`nd_extension_install.py`、`nd_backup.py`、`nd_modelpaths.py`、`nd_icon.ico`、`brand\` 和 `chrome_extension\` 文件夹以及 `ND_Launcher.bat` 复制到整合包根目录，然后运行 `ND_Launcher.bat`。首次启动时它会把 PySide6 安装到 `python_embeded`。
+将 `nd_launcher.py`、`nd_i18n.py`、`nd_browser.py`、`nd_extension_install.py`、`nd_backup.py`、`nd_backend.py`、`nd_backend_install.py`、`nd_modelpaths.py`、`nd_wfinstall.py`、`nd_icon.ico`、`brand\` 和 `chrome_extension\` 文件夹以及 `ND_Launcher.bat` 复制到整合包根目录，然后运行 `ND_Launcher.bat`。首次启动时它会把 PySide6 安装到 `python_embeded`。
 
 **系统要求：** Windows 10 / 11（64 位）以及任何带 `python_embeded` 的 ComfyUI 便携版。可选：用于更新自定义节点的 [Git for Windows](https://git-scm.com)，以及用于 GPU 监控的 NVIDIA 显卡。
 
 ## 须知
 
-- **启动参数。** `--enable-manager`、`--enable-manager-legacy-ui` 和 `--max-upload-size 999` 默认开启，可在“启动”选项卡中关闭。`--enable-manager` 需要较新的 ComfyUI 以及 pip 版 ComfyUI-Manager，旧版整合包请关闭它。
+- **启动参数。** `--enable-manager` 和 `--max-upload-size 999` 默认开启，`--enable-manager-legacy-ui`（经典 Manager 窗口）默认关闭，均可在“启动”选项卡中更改。`--enable-manager` 需要较新的 ComfyUI 以及 pip 版 ComfyUI-Manager：如果缺少，选项旁会出现“安装”按钮；旧版整合包请关闭该选项。
 - **设置**保存在启动器旁的 `nd_launcher.json` 中。
 - **API 令牌**使用 Windows DPAPI 加密，只有本机上你的 Windows 用户才能解密。
 - **网络访问。** 启动器不发送任何遥测数据，只在你使用相应功能时联网：下载、安装和更新节点。

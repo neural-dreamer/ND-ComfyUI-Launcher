@@ -1,7 +1,9 @@
 from pathlib import Path
 import tempfile
 import unittest
-from nd_extension_install import browser_spec, extension_browsers, load_catalog, prepare_extension
+from unittest import mock
+import nd_extension_install
+from nd_extension_install import STORE_URL, browser_spec, extension_browsers, load_catalog, needs_store_addon, open_store_page, prepare_extension
 
 SOURCE = Path(__file__).resolve().parents[1] / 'chrome_extension'
 
@@ -58,3 +60,23 @@ class ExtensionInstallTests(unittest.TestCase):
         with self.assertRaises(OSError):prepare_extension(SOURCE,None)
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(FileNotFoundError):prepare_extension(td,td)
+
+
+    def test_store_url_points_to_published_extension(self):
+        self.assertEqual(STORE_URL,'https://chromewebstore.google.com/detail/ikiegihpjhkejmbbbdiiombnaihannca')
+        self.assertNotIn('?',STORE_URL)
+
+    def test_only_opera_needs_store_addon(self):
+        self.assertTrue(needs_store_addon(browser_spec(r'C:\Opera\launcher.exe','Opera',self.catalog)))
+        for exe in (r'C:\Chrome\chrome.exe',r'C:\Edge\msedge.exe',r'C:\Brave\brave.exe'):
+            self.assertFalse(needs_store_addon(browser_spec(exe,'',self.catalog)))
+        self.assertFalse(needs_store_addon(None))
+
+    def test_open_store_page_passes_url_to_browser(self):
+        with tempfile.TemporaryDirectory() as td:
+            exe=Path(td)/'chrome.exe'
+            exe.write_bytes(b'')
+            with mock.patch.object(nd_extension_install.subprocess,'Popen') as popen:
+                open_store_page(exe)
+            self.assertEqual(popen.call_args[0][0],[str(exe),STORE_URL])
+            with self.assertRaises(FileNotFoundError):open_store_page(Path(td)/'missing.exe')

@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
     QPushButton, QComboBox, QDialog, QCheckBox, QSpinBox, QLineEdit, QPlainTextEdit, QTextBrowser,
     QStackedWidget, QSplitter, QFileDialog, QMessageBox, QProgressBar, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QInputDialog, QGraphicsDropShadowEffect, QScrollArea, QButtonGroup, QTableWidget,
-    QTableWidgetItem, QAbstractItemView, QSizePolicy, QSystemTrayIcon, QMenu, QAbstractButton,
+    QTableWidgetItem, QAbstractItemView, QSizePolicy, QSystemTrayIcon, QMenu, QAbstractButton, QRadioButton,
 )
 
 # ─────────────────────────────── локализация ──────────────────────────────────
@@ -50,9 +50,12 @@ from PySide6.QtWidgets import (
 if not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parent))  # python_embeded (._pth) не видит папку скрипта
 from nd_browser import BrowserServer, PORT as BROWSER_PORT
-from nd_extension_install import load_catalog, browser_spec, extension_browsers, prepare_extension
+from nd_extension_install import STORE_URL, load_catalog, browser_spec, extension_browsers, prepare_extension, open_store_page, needs_store_addon
 import nd_backup as backup
+import nd_backend as penv
+import nd_backend_install as penv_install
 import nd_modelpaths as modelpaths
+import nd_wfinstall as wfi
 
 try:
     from nd_i18n import TRANSLATIONS
@@ -108,7 +111,7 @@ def install_qt_translator(code):
 
 
 APP_TITLE = "ND · ComfyUI Launcher"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 DEFAULT_PORT = 8188
 BRAND_NAME = "Neural Dreamer"
 REPO_URL = "https://github.com/neural-dreamer/ND-ComfyUI-Launcher"
@@ -360,6 +363,41 @@ def parse_repo_url(text: str):
 
 def split_urls(text: str):
     return [u for u in re.split(r"[\s,;]+", text or "") if u.strip()]
+
+
+# Проверка requirements.txt нод: каких пакетов не хватает в python_embeded (запускается через него же).
+DEPS_CHECK_SCRIPT = r"""
+import sys, json, os
+from importlib import metadata
+try:
+    from packaging.requirements import Requirement
+except Exception:
+    from pip._vendor.packaging.requirements import Requirement
+res = {}
+for d in json.loads(sys.argv[1]):
+    miss = []
+    f = os.path.join(d, "requirements.txt")
+    if os.path.isfile(f):
+        for line in open(f, encoding="utf-8", errors="replace"):
+            line = line.split(" #")[0].strip()
+            if not line or line.startswith(("#", "-", "git+", "http")) or "://" in line:
+                continue
+            try:
+                r = Requirement(line)
+            except Exception:
+                continue
+            if r.marker is not None and not r.marker.evaluate():
+                continue
+            try:
+                v = metadata.version(r.name)
+            except metadata.PackageNotFoundError:
+                miss.append(r.name)
+                continue
+            if r.specifier and not r.specifier.contains(v, prereleases=True):
+                miss.append(r.name + str(r.specifier) + " (" + v + ")")
+    res[d] = miss
+print(json.dumps(res))
+"""
 
 
 # Скачивание ноды архивом, если git не установлен (запускается через python_embeded).
@@ -1189,9 +1227,10 @@ DEFAULT_CONFIG = dict(
     browser="", browser_app_mode=False,
     hf_token="", civitai_token="", dl_connections=8, dl_hf_cli=False, dl_last_folder="checkpoints", dl_custom_folders=[],
     minimize_to_tray=False, shortcut_name="ComfyUI Neural Dreamer", shortcut_minimized=False,
-    arg_manager=True, arg_manager_legacy=True, arg_upload=True,
+    arg_manager=True, arg_manager_legacy=False, arg_upload=True, legacy_ui_migrated=True,
     example_replace=True, example_custom="",
     install_deps=True, install_history=[], lang="ru", theme=DEFAULT_THEME,
+    backend_extract="auto", backend_options={},
 )
 
 VRAM_MODES = [
@@ -1292,8 +1331,11 @@ def load_config():
             data = json.loads(CONFIG_PATH.read_text("utf-8"))
             if isinstance(data, dict):
                 opts = data.pop("options", {}) or {}
+                migrate = "legacy_ui_migrated" not in data
                 cfg.update(data)
                 cfg["options"].update(opts)
+                if migrate:   # в 1.3.0 классический интерфейс Manager выключен по умолчанию (раньше был включён)
+                    cfg["arg_manager_legacy"] = False
     except Exception:
         pass
     return cfg
@@ -1774,6 +1816,12 @@ QCheckBox::indicator:hover, QTreeWidget::indicator:hover { border-color: @CYAN; 
 QCheckBox::indicator:checked, QTreeWidget::indicator:checked { border: none;
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 @CYAN, stop:1 @PINK); }
 
+QRadioButton { spacing: 10px; background: transparent; }
+QRadioButton::indicator { width: 16px; height: 16px; border-radius: 9px; border: 2px solid @BORDER_STRONG; background: @SURFACE2; }
+QRadioButton::indicator:hover { border-color: @GREEN; }
+QRadioButton::indicator:checked { border: 2px solid @GREEN; background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 @GREEN, stop:0.55 @GREEN, stop:0.6 @SURFACE2, stop:1 @SURFACE2); }
+QRadioButton::indicator:disabled { border-color: @BORDER; background: @SURFACE2; }
+
 QPlainTextEdit#Console { background: @CONSOLE_BG; border: 1px solid @BORDER; border-radius: @R_LG; padding: 8px;
     selection-background-color: @SEL; }
 QTextBrowser#WfView { background: @SURFACE; color: #d3d3e0; border: none; selection-background-color: @SEL; }
@@ -2166,10 +2214,26 @@ def make_env():
 
 
 class TaskRunner(QObject):
-    """Последовательно выполняет шаги: (подпись, программа, аргументы, папка) или callable."""
+    """Последовательно выполняет шаги: (подпись, программа, аргументы, папка[, env]) или callable.
+    Для pip и git разбирает прогресс загрузки (его показывает TaskActivityBar), умеет перезапустить и пропустить шаг."""
     output = Signal(str)
     started = Signal(str)
     finished = Signal(str, int)
+
+    _PIP_PROGRESS = re.compile(r"^Progress (\d+) of (\d+)\s*$")
+    _PIP_DOWNLOAD = re.compile(r"^\s*Downloading (\S+?)(?: \(([\d.]+ ?\w?B)\))?\s*$")
+    _PIP_RETRY = re.compile(r"Retrying \(|Connection (?:broken|aborted)|ReadTimeoutError|ConnectTimeout|Max retries exceeded", re.I)
+    _GIT_PROGRESS = re.compile(r"^(?:remote: )?(Receiving objects|Resolving deltas|Counting objects|Compressing objects|"
+                               r"Enumerating objects|Updating files|Checking out files):\s+(\d+)%(?:[^,]*\([^)]*\))?(?:,\s*([\d.]+ \S+)\s*\|\s*([\d.]+ \S+?)/s)?")
+
+    @staticmethod
+    def _git_bytes(text):
+        """«12.30 MiB» → байты (git пишет KiB/MiB/GiB/bytes)."""
+        m = re.match(r"([\d.]+)\s*(bytes?|[KMGT]i?B)", text or "", re.I)
+        if not m:
+            return 0
+        mul = {"b": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}[m.group(2)[0].lower()]
+        return float(m.group(1)) * mul
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2177,8 +2241,10 @@ class TaskRunner(QObject):
         self.title = ""
         self.errors = 0
         self.proc = None
+        self.cur = None
         self.busy = False
         self.last_code = 0
+        self._restart = self._skip = self._killed = False
 
     def run(self, title, steps):
         if self.busy:
@@ -2191,7 +2257,13 @@ class TaskRunner(QObject):
         QTimer.singleShot(0, self._next)
         return True
 
+    @staticmethod
+    def _is_pip(args):
+        a = [str(x) for x in args]
+        return "-m" in a and a[a.index("-m") + 1:a.index("-m") + 2] == ["pip"]
+
     def _next(self):
+        self.cur = None
         if not self.steps:
             self.busy = False
             self.proc = None
@@ -2215,13 +2287,19 @@ class TaskRunner(QObject):
         p = QProcess(self)
         p.setProcessChannelMode(QProcess.MergedChannels)
         env = make_env()
+        mode = "pip" if self._is_pip(args) else ("git" if Path(str(prog)).stem.lower() == "git" else None)
+        if mode == "pip":
+            env.insert("PIP_PROGRESS_BAR", "raw")   # строки «Progress N of M» вместо анимации, которой нет в канале
         for k, v in (extra_env or {}).items():
             env.insert(k, str(v))
         p.setProcessEnvironment(env)
         p.setWorkingDirectory(str(cwd))
-        p.readyReadStandardOutput.connect(lambda: self.output.emit(dec.decode(bytes(p.readAllStandardOutput()))))
-        p.finished.connect(lambda code, _st=None: self._done(code, label))
-        p.errorOccurred.connect(lambda err: self._failed(err, label))
+        now = time.time()
+        self.cur = dict(step=st, label=label, t0=now, last=now, mode=mode, buf="", done=0, total=0, file="", pct=None,
+                        phase="", git_speed=0, git_size=0, samples=[], retries=0)
+        p.readyReadStandardOutput.connect(lambda: self._read(p, dec))
+        p.finished.connect(lambda code, _st=None: self._done(p, code, label))
+        p.errorOccurred.connect(lambda err: self._failed(p, err, label))
         self.proc = p
         p.start(str(prog), [str(a) for a in args])
 
@@ -2229,17 +2307,145 @@ class TaskRunner(QObject):
         """Добавить шаги в конец уже идущей очереди."""
         self.steps.extend(steps)
 
-    def _done(self, code, label):
+    # ── разбор вывода ──
+    def _read(self, p, dec):
+        if p is not self.proc or self.cur is None:
+            return
+        text = dec.decode(bytes(p.readAllStandardOutput()))
+        out = self._filter(text) if self.cur["mode"] else text
+        if self.cur["mode"] is None:
+            self.cur["last"] = time.time()
+        if out:
+            self.output.emit(out)
+
+    def _filter(self, text, final=False):
+        cur, now, keep = self.cur, time.time(), []
+        parts = re.split(r"\r\n|\r|\n", cur["buf"] + text)
+        cur["buf"] = "" if final else parts.pop()
+        for line in parts:
+            m = self._PIP_PROGRESS.match(line) if cur["mode"] == "pip" else None
+            if m:
+                done, total = int(m.group(1)), int(m.group(2))
+                if done > cur["done"] or total != cur["total"]:
+                    cur["last"] = now
+                cur["done"], cur["total"] = done, total
+                cur["samples"] = [x for x in cur["samples"] if now - x[0] < 5] + [(now, done)]
+                continue
+            g = self._GIT_PROGRESS.match(line) if cur["mode"] == "git" else None
+            if g:
+                pct = int(g.group(2))
+                if pct != cur["pct"] or g.group(1) != cur["phase"]:
+                    cur["last"] = now
+                cur["phase"], cur["pct"] = g.group(1), pct
+                if g.group(3):
+                    cur["git_size"] = self._git_bytes(g.group(3))
+                    cur["git_speed"] = self._git_bytes(g.group(4))
+                continue
+            if cur["mode"] == "pip":
+                d = self._PIP_DOWNLOAD.match(line)
+                if d and not d.group(1).endswith(".metadata"):
+                    cur.update(file=d.group(1), done=0, total=0, samples=[])
+            if self._PIP_RETRY.search(line):
+                cur["retries"] += 1      # повтор — это не прогресс, таймер «нет данных» не сбрасываем
+            else:
+                cur["last"] = now
+            keep.append(line)
+        return "\n".join(keep) + "\n" if keep else ""
+
+    def activity(self):
+        """Снимок текущего шага для строки состояния или None, если сейчас идёт не процесс."""
+        c = self.cur
+        if not self.busy or c is None:
+            return None
+        now = time.time()
+        speed = None
+        if c["samples"]:
+            t0, d0 = c["samples"][0]
+            t1, d1 = c["samples"][-1]
+            if t1 - t0 >= 0.5 and now - t1 < 4:
+                speed = max(0.0, (d1 - d0) / (t1 - t0))
+            elif now - t1 >= 4:
+                speed = 0.0
+        return dict(label=c["label"], elapsed=now - c["t0"], idle=now - c["last"], mode=c["mode"], done=c["done"],
+                    total=c["total"], file=c["file"], pct=c["pct"], phase=c["phase"], git_speed=c["git_speed"],
+                    git_size=c["git_size"],
+                    speed=speed, retries=c["retries"])
+
+    # ── управление шагом ──
+    @staticmethod
+    def _kill_tree(p):
+        """git и pip запускают дочерние процессы; без /T они остаются жить и держат файлы."""
+        if sys.platform == "win32" and p.processId():
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.processId())], capture_output=True, timeout=15,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except Exception:
+                pass
+        if p.state() != QProcess.NotRunning:
+            p.kill()
+
+    @staticmethod
+    def _cleanup(step):
+        """Недоклонированная папка мешает новому клонированию и ставить в ней нечего."""
+        try:
+            prog, args = str(step[1]), [str(a) for a in step[2]]
+        except Exception:
+            return
+        if Path(prog).stem.lower() != "git" or not args or args[0] != "clone":
+            return
+        dest = Path(args[-1])
+
+        def unlock(func, path, _exc):
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        for _ in range(6):
+            if not dest.exists():
+                return
+            shutil.rmtree(dest, onerror=unlock)
+            if dest.exists():
+                time.sleep(0.4)
+
+    def restart_step(self):
+        """Прервать текущий шаг и сразу начать его заново (новое соединение, например после включения VPN)."""
+        if self.proc and self.cur and self.proc.state() != QProcess.NotRunning:
+            self._restart = True
+            self._kill_tree(self.proc)
+
+    def skip_step(self):
+        if self.proc and self.cur and self.proc.state() != QProcess.NotRunning:
+            self._skip = True
+            self._kill_tree(self.proc)
+
+    def _done(self, p, code, label):
+        if p is not self.proc:
+            return
+        cur = self.cur
+        if cur is not None and cur["mode"]:
+            tail = self._filter("", final=True)
+            if tail:
+                self.output.emit(tail)
+        restart, skip, killed = self._restart, self._skip, self._killed
+        self._restart = self._skip = self._killed = False
+        if cur is not None and (restart or skip or killed):
+            self._cleanup(cur["step"])
+        if restart and cur is not None:
+            self.output.emit(tr('\n[ND] ↻ Переподключение: {0}\n', label))
+            self.steps.insert(0, cur["step"])
+            QTimer.singleShot(0, self._next)
+            return
         self.last_code = code
-        if code != 0:
+        if skip:
+            self.errors += 1
+            self.output.emit(tr('\n[ND] ⏭ Шаг пропущен: {0}\n', label))
+        elif code != 0:
             self.errors += 1
             self.output.emit(tr('\n[ND] ✖ {0}: завершилось с кодом {1}\n', label, code))
         else:
             self.output.emit("\n")
         QTimer.singleShot(0, self._next)
 
-    def _failed(self, err, label):
-        if err == QProcess.FailedToStart:
+    def _failed(self, p, err, label):
+        if p is self.proc and err == QProcess.FailedToStart:
             self.last_code = -1
             self.errors += 1
             self.output.emit(tr('[ND] ✖ {0}: не удалось запустить процесс\n', label))
@@ -2248,9 +2454,112 @@ class TaskRunner(QObject):
     def kill(self, wait_ms=0):
         self.steps = []
         if self.proc and self.proc.state() != QProcess.NotRunning:
-            self.proc.kill()
+            self._killed = True
+            self._kill_tree(self.proc)
             if wait_ms:  # пока процесс жив, Windows не даёт удалить открытые им файлы
                 self.proc.waitForFinished(wait_ms)
+
+
+class TaskActivityBar(QFrame):
+    """Строка состояния под консолью: что делает текущий шаг, прогресс, скорость и кнопки управления.
+    Видна только пока идут установка или обновление."""
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.setObjectName("Panel")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(6)
+        self.lbl_title = QLabel()
+        self.lbl_title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.lbl_title.setStyleSheet("font-weight:700; background:transparent;")
+        lay.addWidget(self.lbl_title)
+        self.pb = QProgressBar()
+        self.pb.setTextVisible(False)
+        self.pb.setFixedHeight(8)
+        lay.addWidget(self.pb)
+        self.lbl_info = QLabel()
+        self.lbl_info.setObjectName("Mono")
+        self.lbl_info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        lay.addWidget(self.lbl_info)
+        self.lbl_hint = QLabel()
+        self.lbl_hint.setWordWrap(True)
+        self.lbl_hint.setTextFormat(Qt.RichText)
+        self.lbl_hint.hide()
+        lay.addWidget(self.lbl_hint)
+        row = QHBoxLayout()
+        self.btn_retry = button(tr("↻  Переподключить"), win.tasks.restart_step)
+        self.btn_retry.setToolTip(tr("Прервать текущую загрузку и начать этот шаг заново — например, после включения VPN."))
+        self.btn_skip = button(tr("Пропустить шаг"), win.tasks.skip_step)
+        self.btn_skip.setToolTip(tr("Отметить шаг ошибкой и перейти к следующему."))
+        self.btn_cancel = button(tr("Отмена"), win.tasks.kill)
+        self.btn_cancel.setToolTip(tr("Остановить всю установку."))
+        row.addWidget(self.btn_retry)
+        row.addWidget(self.btn_skip)
+        row.addStretch()
+        row.addWidget(self.btn_cancel)
+        lay.addLayout(row)
+        self._t = QTimer(self)
+        self._t.setInterval(500)
+        self._t.timeout.connect(self._tick)
+        self._t.start()
+        self._tick()
+
+    @staticmethod
+    def _mmss(sec):
+        sec = int(sec)
+        return f"{sec // 60}:{sec % 60:02d}"
+
+    def _tick(self):
+        tasks = self.win.tasks
+        if not tasks.busy:
+            self.setVisible(False)
+            return
+        self.setVisible(True)
+        a = tasks.activity()
+        self.btn_retry.setEnabled(a is not None)
+        self.btn_skip.setEnabled(a is not None)
+        if a is None:
+            self.lbl_title.setText(html.escape(tasks.title))
+            self.pb.setRange(0, 0)
+            self.lbl_info.setText("")
+            self.lbl_hint.hide()
+            return
+        self.lbl_title.setText(f"{tasks.title}  ·  {a['label']}")
+        parts, size = [], ""
+        if a["total"]:
+            self.pb.setRange(0, 1000)
+            self.pb.setValue(int(1000 * a["done"] / a["total"]))
+            if a["file"]:
+                parts.append(a["file"])
+            size = f"{fmt_size(a['done'])} / {fmt_size(a['total'])}"
+        elif a["pct"] is not None:
+            self.pb.setRange(0, 100)
+            self.pb.setValue(a["pct"])
+            parts.append(f"{a['phase']}: {a['pct']}%")
+            if a["git_size"]:
+                size = tr("получено {0}", fmt_size(a["git_size"]))
+        else:
+            self.pb.setRange(0, 0)
+        speed = a["speed"] if a["speed"] is not None else (a["git_speed"] or None)
+        if speed is not None:
+            parts.append(tr("{0}/с", fmt_size(speed)))
+        parts.append(tr("шаг {0}", self._mmss(a["elapsed"])))
+        if a["retries"]:
+            parts.append(tr("повторных попыток: {0}", a["retries"]))
+        if a["idle"] >= 10:
+            parts.append(tr("нет данных {0} с", int(a["idle"])))
+        if size:
+            parts.append(size)
+        self.lbl_info.setText("  ·  ".join(parts))
+        stalled = a["idle"] >= 30 or (a["retries"] and a["idle"] >= 10)
+        if stalled and a["mode"]:
+            self.lbl_hint.setText(f'<span style="color:{C["YELLOW"]}">⚠ ' + html.escape(
+                tr("Похоже, соединение зависло или очень медленное. Если включил VPN или сменил сеть — нажми «Переподключить»: загрузка начнётся заново.")) + "</span>")
+            self.lbl_hint.show()
+        else:
+            self.lbl_hint.hide()
 
 
 class RoundedDownloadHeader(QHeaderView):
@@ -2566,10 +2875,875 @@ class BrowserRequests(QObject):
     request = Signal(object)
 
 
+# ───────────────────── платформа сборки: NVIDIA / AMD ─────────────────────
+
+DL_PROGRESS_RE = re.compile(r"(\d{1,3})%\|[^|]*\|\s*([\d.]+\s*[KMGT]?B)\s*/\s*([\d.]+\s*[KMGT]?B|\?)\s*\[([\d.]+\s*[KMGT]?B)/s\]")
+SEVENZIP_PAGE = "https://www.7-zip.org/download.html"
+
+
+class WfDropZone(QFrame):
+    """Область для перетаскивания воркфлоу (.json / .zip)."""
+    dropped = Signal(list)
+    clicked = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("WfDrop")
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(4)
+        t = QLabel("⤓  " + tr("Перетащи сюда воркфлоу для установки (или нажми, чтобы выбрать файл)"))
+        t.setAlignment(Qt.AlignCenter)
+        t.setStyleSheet("font-weight:700; background:transparent;")
+        h = muted(tr("Файлы .json (можно несколько) или архив .zip. Лаунчер найдёт нужные ноды и модели и предложит их поставить."))
+        h.setAlignment(Qt.AlignCenter)
+        lay.addWidget(t)
+        lay.addWidget(h)
+        self.setStyleSheet(f"QFrame#WfDrop {{ border: 2px dashed {C['BORDER_STRONG']}; border-radius: 12px; background: transparent; }}"
+                           f"QFrame#WfDrop[hot=\"true\"] {{ border-color: {C['CYAN']}; }}")
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.LeftButton and self.rect().contains(ev.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(ev)
+
+    def _hot(self, v):
+        self.setProperty("hot", "true" if v else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    @staticmethod
+    def _paths(ev):
+        out = []
+        for u in ev.mimeData().urls():
+            if u.isLocalFile() and u.toLocalFile().lower().endswith((".json", ".zip")):
+                out.append(u.toLocalFile())
+        return out
+
+    def dragEnterEvent(self, ev):
+        if self._paths(ev):
+            ev.acceptProposedAction()
+            self._hot(True)
+
+    def dragLeaveEvent(self, ev):
+        self._hot(False)
+
+    def dropEvent(self, ev):
+        self._hot(False)
+        paths = self._paths(ev)
+        if paths:
+            ev.acceptProposedAction()
+            self.dropped.emit(paths)
+
+
+# ───────────────────── установка воркфлоу «под ключ» ─────────────────────
+
+class WorkflowInstallDialog(QDialog):
+    """Показывает, что нужно воркфлоу (файлы, ноды, модели), даёт поправить решения и запускает установку.
+    Разбор и поиск репозиториев — в nd_wfinstall.py; ноды ставятся через общий TaskRunner лаунчера."""
+
+    def __init__(self, win, bundle):
+        super().__init__(win)
+        self.win, self.bundle = win, bundle
+        self.setWindowTitle(tr("Установка воркфлоу"))
+        geo = (win.screen() or QApplication.primaryScreen()).availableGeometry()
+        self.setMinimumSize(min(760, int(geo.width() * 0.9)), min(560, int(geo.height() * 0.9)))
+        self.resize(min(1180, int(geo.width() * 0.9)), min(900, int(geo.height() * 0.9)))
+        self.analysis = None
+        self.pkg_rows = []      # (item, pkg, widgets)
+        self.file_rows = []
+        self.model_rows = []
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+        self.lbl_head = QLabel()
+        self.lbl_head.setTextFormat(Qt.RichText)
+        self.lbl_head.setWordWrap(True)
+        lay.addWidget(self.lbl_head)
+        self.lbl_spin = muted(tr("Анализирую воркфлоу…"))
+        lay.addWidget(self.lbl_spin)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.body = QWidget()
+        self.body_lay = QVBoxLayout(self.body)
+        self.body_lay.setContentsMargins(0, 0, 8, 0)
+        self.body_lay.setSpacing(10)
+        self.scroll.setWidget(self.body)
+        self.scroll.setVisible(False)
+        lay.addWidget(self.scroll, 1)
+        self.lbl_warn = QLabel()
+        self.lbl_warn.setTextFormat(Qt.RichText)
+        self.lbl_warn.setWordWrap(True)
+        lay.addWidget(self.lbl_warn)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self.btn_cancel = button(tr("Отмена"), self.reject)
+        self.btn_go = button(tr("Установить"), self._install, "Primary")
+        self.btn_go.setEnabled(False)
+        buttons.addWidget(self.btn_cancel)
+        buttons.addWidget(self.btn_go)
+        lay.addLayout(buttons)
+        self._spin_i = 0
+        self._spin = QTimer(self)
+        self._spin.setInterval(110)
+        self._spin.timeout.connect(self._tick)
+        self._spin.start()
+        n = len(bundle.workflows)
+        self.lbl_head.setText("<b>" + html.escape(tr("Воркфлоу для установки: {0}", n)) + "</b>")
+        win._wf_dialog = self
+        self._start_analysis()
+
+    def _tick(self):
+        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        self._spin_i = (self._spin_i + 1) % len(frames)
+        self.lbl_spin.setText(f'<span style="color:{C["CYAN"]}">{frames[self._spin_i]}</span>&nbsp; ' + html.escape(tr("Анализирую воркфлоу и ищу репозитории нод…")))
+
+    def done(self, r):
+        self._spin.stop()
+        if getattr(self.win, "_wf_dialog", None) is self:
+            self.win._wf_dialog = None
+        super().done(r)
+
+    # ── анализ в фоне ──
+    def _start_analysis(self):
+        cn = self.win.comfy / "custom_nodes"
+        items = [w["data"] for w in self.bundle.workflows if not w["api"]]
+        state = {"fails": 0, "manager": None}
+
+        def registry(cnr):
+            if state["fails"] >= 3:
+                return None
+            url = wfi.fetch_registry_repo(cnr, timeout=6)
+            state["fails"] = 0 if url else state["fails"] + 1
+            return url
+
+        def manager(t):
+            if state["manager"] is None:
+                state["manager"] = wfi.fetch_manager_index() or (lambda _t: [])
+            return state["manager"](t)
+
+        def work():
+            installed = wfi.scan_installed(cn)
+            analyses = [wfi.analyze_workflow(d, installed, registry, manager) for d in items]
+            models = []
+            seen = set()
+            for d in items:
+                for m in wfi.collect_models(d):
+                    k = (m["name"].lower(), (m["folder"] or "").lower())
+                    if k not in seen:
+                        seen.add(k)
+                        models.append(m)
+            return wfi.merge_analyses(analyses), models
+        run_in_thread(self.win._bridge, ("wf_analyze", id(self)), work)
+
+    def _on_analyzed(self, result, error):
+        self._spin.stop()
+        self.lbl_spin.setVisible(False)
+        if error is not None:
+            self.lbl_warn.setText(f'<span style="color:{C["RED"]}">' + html.escape(tr("Не удалось разобрать воркфлоу: {0}", error)) + "</span>")
+            return
+        self.analysis, self.models = result
+        self.scroll.setVisible(True)
+        self._build_files()
+        self._build_nodes()
+        self._build_models()
+        self.btn_go.setEnabled(True)
+        self._update_warning()
+
+    # ── секции ──
+    def _section(self, title, note=None):
+        pnl, pl = panel(title)
+        if note:
+            pl.addWidget(muted(note))
+        self.body_lay.addWidget(pnl)
+        return pl
+
+    def _tree(self, headers, height):
+        t = QTreeWidget()
+        t.setHeaderLabels(headers)
+        t.setRootIsDecorated(False)
+        t.setAlternatingRowColors(True)
+        t.setMinimumHeight(height)
+        t.setMaximumHeight(height)
+        t.setSelectionMode(QAbstractItemView.NoSelection)
+        return t
+
+    def _conflict_combo(self):
+        cb = QComboBox()
+        cb.addItem(tr("заменить"), "replace")
+        cb.addItem(tr("пропустить"), "keep")
+        cb.addItem(tr("сохранить оба"), "both")
+        cb.setCurrentIndex(1)
+        return cb
+
+    def _build_files(self):
+        win = self.win
+        pl = self._section(tr("Что будет добавлено"))
+        n_rows = len(self.bundle.workflows) + len(self.bundle.prompts)
+        self.tree_files = self._tree([tr("Файл"), tr("Куда"), tr("Если файл уже есть")], min(56 + 44 * max(1, n_rows), 260))
+        self.tree_files.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tree_files.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tree_files.header().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        pl.addWidget(self.tree_files)
+        self.cb_prompts_root = None
+        if self.bundle.prompts:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(tr("Папка prompts (models\\LLM\\prompts):")))
+            self.cb_prompts_root = QComboBox()
+            for label, path in win._llm_roots():
+                self.cb_prompts_root.addItem(f"{label}  ({path})", str(path))
+            self.cb_prompts_root.currentIndexChanged.connect(self._refresh_files)
+            row.addWidget(self.cb_prompts_root, 1)
+            pl.addLayout(row)
+        self._refresh_files()
+
+    def _prompts_dir(self):
+        if self.cb_prompts_root is not None and self.cb_prompts_root.currentData():
+            return Path(self.cb_prompts_root.currentData()) / "prompts"
+        return self.win.comfy / "models" / "LLM" / "prompts"
+
+    def _refresh_files(self, *_):
+        self.tree_files.clear()
+        self.file_rows = []
+        plan = wfi.plan_files(self.bundle, self.win.workflows_dir, self._prompts_dir())
+        for it in plan:
+            item = QTreeWidgetItem([it["rel"], tr("Воркфлоу") if it["kind"] == "workflow" else str(it["dest"].parent), ""])
+            item.setSizeHint(0, QSize(0, 40))
+            self.tree_files.addTopLevelItem(item)
+            cb = None
+            if it["exists"]:
+                cb = self._conflict_combo()
+                self.tree_files.setItemWidget(item, 2, cb)
+            else:
+                item.setText(2, tr("новый"))
+                item.setForeground(2, QColor(C["GREEN"]))
+            self.file_rows.append((it, cb))
+        for it in self.bundle.workflows:
+            if it["api"]:
+                self.lbl_warn.setText(f'<span style="color:{C["YELLOW"]}">⚠ ' + html.escape(
+                    tr("«{0}» сохранён в формате API: в нём нет сведений о нодах, поэтому ноды для него не определяются.", it["rel"])) + "</span>")
+
+    def _build_nodes(self):
+        pk = self.analysis["packages"]
+        extra = self.analysis["extra_notes"]
+        unknown = self.analysis["unknown_types"]
+        pl = self._section(tr("Кастом-ноды"), tr("Ноды запускают чужой код при установке (requirements.txt, install.py). Проверь список репозиториев перед установкой."))
+        rows = len(pk) + len(extra) + (1 if unknown else 0)
+        self.tree_nodes = self._tree([tr("Репозиторий"), tr("Откуда узнали"), tr("Версия"), tr("Состояние")], min(60 + 34 * max(1, rows), 520))
+        h = self.tree_nodes.header()
+        h.setSectionResizeMode(0, QHeaderView.Stretch)
+        h.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        h.setSectionResizeMode(2, QHeaderView.Fixed)   # в колонке стоят выпадающие списки: по содержимому ширина не считается
+        h.resizeSection(2, 230)
+        h.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        pl.addWidget(self.tree_nodes)
+        vrow = QHBoxLayout()
+        vrow.addWidget(muted(tr("Версия для отмеченных нод:"), False))
+        vrow.addWidget(button(tr("Из воркфлоу"), lambda: self._set_versions("pinned")))
+        vrow.addWidget(button(tr("Последняя ⚠"), lambda: self._set_versions("latest")))
+        vrow.addStretch()
+        pl.addLayout(vrow)
+        self.pkg_rows = []
+        for p in pk:
+            self._add_pkg_row(p, optional=False)
+        for e in extra:
+            self._add_pkg_row(dict(name=e["name"], repo=e["repo"], clone=e["clone"], page=e["page"], source=tr("заметка"),
+                                   ver=None, ver_kind=None, status="installed" if e["installed"] else "install",
+                                   alternatives=[], installed=e["name"] if e["installed"] else None, installed_kind="same" if e["installed"] else None,
+                                   types=[], nodes=0, vers_by_repo={}), optional=True)
+        if unknown:
+            self.lbl_unknown = muted(tr("Ноды без сведений об источнике: {0}. Если после установки ComfyUI покажет красные ноды, найди их репозитории вручную.", ", ".join(unknown[:12]) + ("…" if len(unknown) > 12 else "")))
+            pl.addWidget(self.lbl_unknown)
+        self.chk_deps = QCheckBox(tr("Ставить зависимости нод (requirements.txt и install.py)"))
+        self.chk_deps.setChecked(bool(self.win.cfg.get("install_deps", True)))
+        pl.addWidget(self.chk_deps)
+        drow = QHBoxLayout()
+        self.btn_deps = button(tr("Проверить зависимости установленных нод"), self._start_dep_check)
+        self.lbl_deps = muted("", False)
+        self.lbl_deps.setTextFormat(Qt.RichText)
+        drow.addWidget(self.btn_deps)
+        drow.addWidget(self.lbl_deps, 1)
+        pl.addLayout(drow)
+        self.lbl_ver_note = QLabel()
+        self.lbl_ver_note.setTextFormat(Qt.RichText)
+        self.lbl_ver_note.setWordWrap(True)
+        pl.addWidget(self.lbl_ver_note)
+        self._refresh_ver_note()
+        self._start_dep_check()
+
+    # ── проверка зависимостей уже установленных нод ──
+    def _start_dep_check(self):
+        cn = self.win.comfy / "custom_nodes"
+        self._dep_rows = {}
+        for item, p, w in self.pkg_rows:
+            if p["status"] == "installed" and p.get("installed"):
+                d = cn / p["installed"]
+                if (d / "requirements.txt").is_file():
+                    self._dep_rows[str(d)] = (item, p, w)
+        if not self._dep_rows:
+            self.lbl_deps.setText(f'<span style="color:{C["MUTED"]}">' + html.escape(tr("У установленных нод нет requirements.txt.")) + "</span>")
+            return
+        self.btn_deps.setEnabled(False)
+        self.lbl_deps.setText(f'<span style="color:{C["MUTED"]}">' + html.escape(tr("Проверяю зависимости…")) + "</span>")
+        py, paths = self.win.python_exe, list(self._dep_rows)
+
+        def work():
+            r = subprocess.run([str(py), "-s", "-c", DEPS_CHECK_SCRIPT, json.dumps(paths)], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=180,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if r.returncode != 0:
+                raise RuntimeError((r.stderr or r.stdout or "").strip().splitlines()[-1] if (r.stderr or r.stdout).strip() else str(r.returncode))
+            return json.loads(r.stdout.strip().splitlines()[-1])
+        run_in_thread(self.win._bridge, ("wf_deps", id(self)), work)
+
+    def _on_deps_checked(self, result, error):
+        self.btn_deps.setEnabled(True)
+        if error is not None:
+            self.lbl_deps.setText(f'<span style="color:{C["RED"]}">' + html.escape(tr("Не удалось проверить зависимости: {0}", error)) + "</span>")
+            return
+        bad = 0
+        for path, (item, p, w) in self._dep_rows.items():
+            miss = result.get(path) or []
+            if miss:
+                bad += 1
+                w["repair"] = True
+                item.setCheckState(0, Qt.Checked)
+                item.setText(3, tr("не хватает зависимостей: {0}", len(miss)))
+                item.setForeground(3, QColor(C["YELLOW"]))
+                item.setToolTip(3, tr("Не хватает: {0}", ", ".join(miss)) + "\n" + tr("Отмеченные ноды получат доустановку зависимостей."))
+            else:
+                w["repair"] = False
+                item.setCheckState(0, Qt.Unchecked)
+                item.setText(3, tr("установлено"))
+                item.setForeground(3, QColor(C["GREEN"]))
+                item.setToolTip(3, "")
+        if bad:
+            self.lbl_deps.setText(f'<span style="color:{C["YELLOW"]}">⚠ ' + html.escape(tr("Нод с недостающими зависимостями: {0}. Они отмечены — зависимости доустановятся.", bad)) + "</span>")
+        else:
+            self.lbl_deps.setText(f'<span style="color:{C["GREEN"]}">' + html.escape(tr("Зависимости установленных нод на месте.")) + "</span>")
+
+    def _set_versions(self, mode):
+        """Быстро переключает версию у всех отмеченных нод (ставить или нет — решает «Установить»)."""
+        for item, _p, w in self.pkg_rows:
+            cb = w.get("ver_cb")
+            if cb is not None and item.checkState(0) == Qt.Checked:
+                cb.setCurrentIndex(max(0, cb.findData(mode)))
+        self._refresh_ver_note()
+
+    def _add_pkg_row(self, p, optional):
+        item = QTreeWidgetItem(["", "", "", ""])
+        self.tree_nodes.addTopLevelItem(item)
+        w = dict(optional=optional)
+        status = p["status"]
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        stat_text, color = "", C["MUTED"]
+        w["repo_cb"], w["edit"], w["ver_cb"] = None, None, None
+        if status == "notfound":
+            item.setCheckState(0, Qt.Unchecked)
+            w["edit"] = QLineEdit()
+            w["edit"].setPlaceholderText(tr("{0}: вставь ссылку на репозиторий", p["name"]))
+            w["edit"].textChanged.connect(lambda _t, it=item, pw=w: self._on_edit_repo(it, pw))
+            self.tree_nodes.setItemWidget(item, 0, w["edit"])
+            stat_text, color = tr("не найдено"), C["RED"]
+        else:
+            if p["alternatives"]:
+                w["repo_cb"] = QComboBox()
+                w["repo_cb"].addItem(p["repo"], p["repo"])
+                for a in p["alternatives"]:
+                    w["repo_cb"].addItem(a, a)
+                w["repo_cb"].setToolTip(tr("В воркфлоу встречаются разные форки одного репозитория: выбери нужный."))
+                w["repo_cb"].currentIndexChanged.connect(lambda _i, pw=w: self._refresh_ver_note())
+                self.tree_nodes.setItemWidget(item, 0, w["repo_cb"])
+                stat_text, color = tr("выбери форк"), C["YELLOW"]
+            else:
+                item.setText(0, p["repo"])
+            item.setText(1, tr(p["source"]) if p["source"] else "")
+            if status == "installed":
+                item.setCheckState(0, Qt.Unchecked)
+                stat_text, color = tr("установлено"), C["GREEN"]
+            elif p.get("installed_kind") == "other":
+                item.setCheckState(0, Qt.Unchecked)
+                item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+                stat_text, color = tr("папка {0} занята другим репозиторием", p["installed"]), C["YELLOW"]
+            else:
+                item.setCheckState(0, Qt.Unchecked if optional else Qt.Checked)
+                stat_text, color = (tr("необязательно") if optional else (stat_text or tr("установить"))), (C["MUTED"] if optional else (color if stat_text else C["CYAN"]))
+        if p["ver_kind"] and status != "installed":
+            w["ver_cb"] = QComboBox()
+            vs = list(p.get("vers") or [p["ver"]])
+            w["ver_cb"].addItem(tr("из воркфлоу ({0})", str(p["ver"])[:7]) + (f" +{len(vs) - 1}" if len(vs) > 1 else ""), "pinned")
+            w["ver_cb"].addItem(tr("последняя ⚠"), "latest")
+            w["ver_cb"].setToolTip(tr("«Последняя» отличается от версии, записанной в воркфлоу: нода могла измениться, воркфлоу на ней не проверялся."))
+            if len(vs) > 1:
+                w["ver_cb"].setItemData(0, tr("В воркфлоу записано несколько версий этой ноды: {0}. Будет выбрана самая новая из них.", ", ".join(str(v)[:10] for v in vs)), Qt.ToolTipRole)
+                w["ver_cb"].setToolTip(w["ver_cb"].itemData(0, Qt.ToolTipRole) + "\n\n" + w["ver_cb"].toolTip())
+            w["ver_cb"].currentIndexChanged.connect(self._refresh_ver_note)
+            self.tree_nodes.setItemWidget(item, 2, w["ver_cb"])
+        elif status != "installed":
+            item.setText(2, tr("последняя"))
+        item.setText(3, stat_text)
+        item.setForeground(3, QColor(color))
+        if p.get("types"):
+            item.setToolTip(0, ", ".join(p["types"][:30]))
+        self.pkg_rows.append((item, p, w))
+
+    def _on_edit_repo(self, item, w):
+        info = wfi.parse_repo(w["edit"].text().strip() or "x") or (wfi.parse_repo("https://github.com/" + w["edit"].text().strip()) if re.fullmatch(r"[\w.-]+/[\w.-]+", w["edit"].text().strip()) else None)
+        w["manual"] = info
+        item.setCheckState(0, Qt.Checked if info else Qt.Unchecked)
+        item.setText(3, tr("установить") if info else tr("не найдено"))
+        item.setForeground(3, QColor(C["CYAN"] if info else C["RED"]))
+
+    def _refresh_ver_note(self, *_):
+        if not hasattr(self, "lbl_ver_note"):
+            return
+        latest = any(w["ver_cb"] is not None and w["ver_cb"].currentData() == "latest" for _i, _p, w in self.pkg_rows)
+        self.lbl_ver_note.setText(f'<span style="color:{C["YELLOW"]}">⚠ ' + html.escape(tr("Для нод с пометкой «последняя» версия отличается от записанной в воркфлоу: нода могла измениться, воркфлоу на ней не проверялся.")) + "</span>" if latest else "")
+
+    def _build_models(self):
+        self.model_rows = []
+        pl = self._section(tr("Модели"))
+        if not self.models:
+            pl.addWidget(muted(tr("Ссылок на модели в воркфлоу не нашлось.")))
+            self.chk_models = None
+            return
+        self.tree_models = self._tree([tr("Модель"), tr("Папка"), tr("Состояние")], min(60 + 30 * len(self.models), 380))
+        h = self.tree_models.header()
+        h.setSectionResizeMode(0, QHeaderView.Stretch)
+        h.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        h.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        pl.addWidget(self.tree_models)
+        for m in self.models:
+            item = QTreeWidgetItem([m["name"], m["folder"] or "—", ""])
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            have = (not m["manual"]) and bool(m["folder"]) and self.win._model_exists(m["folder"], m["name"])
+            if m["manual"]:
+                item.setText(2, tr("скачать вручную"))
+                item.setForeground(2, QColor(C["MUTED"]))
+                item.setToolTip(0, m["url"] or "")
+                item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+            elif not m["folder"]:
+                item.setText(2, tr("папка неизвестна"))
+                item.setForeground(2, QColor(C["YELLOW"]))
+                item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+            elif have:
+                item.setText(2, tr("уже есть"))
+                item.setForeground(2, QColor(C["GREEN"]))
+                item.setCheckState(0, Qt.Unchecked)
+            else:
+                item.setText(2, tr("скачать"))
+                item.setForeground(2, QColor(C["CYAN"]))
+                item.setCheckState(0, Qt.Checked)
+            self.tree_models.addTopLevelItem(item)
+            self.model_rows.append((item, m, have))
+        self.chk_models = QCheckBox(tr("Отправить недостающие модели в «Загрузку моделей»"))
+        self.chk_models.setToolTip(tr("Выбор запоминается для всех воркфлоу."))
+        self.chk_models.setChecked(bool(self.win.cfg.get("wf_send_models", True)))
+        pl.addWidget(self.chk_models)
+        pl.addWidget(muted(tr("Файлы с Civitai и страницы моделей лаунчер скачать сам не может — они помечены «скачать вручную».")))
+
+    def _update_warning(self):
+        pass
+
+    # ── установка ──
+    def _install(self):
+        win = self.win
+        if win._platform_busy() or win.tasks.busy:
+            QMessageBox.information(self, APP_TITLE, tr("Дождись окончания текущей операции."))
+            return
+        # 1. файлы воркфлоу и prompts
+        plan = wfi.plan_files(self.bundle, win.workflows_dir, self._prompts_dir())
+        choices = {}
+        for (it, cb) in self.file_rows:
+            if cb is not None:
+                choices[str(it["dest"])] = cb.currentData()
+        res = wfi.apply_plan(plan, choices)
+        for d in res["written"]:
+            win.console.system(tr("Добавлено: {0}", d))
+        for d in res["kept"]:
+            win.console.system(tr("Пропущен (файл уже есть): {0}", d))
+        for e in res["errors"]:
+            win.console.system(tr("Не удалось записать файл: {0}", e), error=True)
+        # 2. ноды
+        targets = []
+        repair = []
+        for item, p, w in self.pkg_rows:
+            if item.checkState(0) != Qt.Checked:
+                continue
+            if p["status"] == "installed":
+                if w.get("repair") and p.get("installed"):
+                    repair.append(str(win.comfy / "custom_nodes" / p["installed"]))
+                continue
+            repo, ver, vers = p.get("repo"), p.get("ver"), list(p.get("vers") or [])
+            if w.get("manual"):
+                info = w["manual"]
+                repo = f"{info['owner']}/{info['repo']}"
+                ver, vers = None, []
+            elif w.get("repo_cb") is not None:
+                repo = w["repo_cb"].currentData()
+                vers = list(p.get("vers_by_repo", {}).get(repo.lower()) or [])
+                ver = vers[0] if vers else ver
+            info = wfi.parse_repo(f"https://github.com/{repo}") if repo else None
+            if not info:
+                continue
+            clone = p["clone"] if (repo == p.get("repo") and p.get("clone")) else info["clone"]
+            if w.get("manual"):
+                clone = w["manual"]["clone"]
+            pinned = bool(w.get("ver_cb") is not None and w["ver_cb"].currentData() == "pinned" and wfi.ver_kind(ver))
+            targets.append(dict(name=info["repo"], repo=repo, clone=clone, page=info["page"], branch=p.get("branch"),
+                                ver=ver if pinned else None, vers=vers if pinned else [], host=info["host"], owner=info["owner"]))
+        deps = self.chk_deps.isChecked()
+        win._set_cfg("install_deps", deps)
+        # 3. модели
+        models = []
+        if self.chk_models is not None:
+            win._set_cfg("wf_send_models", self.chk_models.isChecked())
+            if self.chk_models.isChecked():
+                models = [m for item, m, have in self.model_rows if item.checkState(0) == Qt.Checked]
+        self.accept()
+        win._run_workflow_install(targets, deps, models, repair)
+
+
+class PlatformDialog(QDialog):
+    """Подготовка окружения другой платформы (скачивание, распаковка, зависимости) и переключение на него.
+    Логика — в nd_backend.py и nd_backend_install.py; здесь интерфейс и фоновый поток."""
+
+    ICONS = {"wait": ("○", "MUTED"), "work": ("◔", "CYAN"), "done": ("✔", "GREEN"), "error": ("✖", "RED")}
+
+    def __init__(self, win, target):
+        super().__init__(win)
+        self.win, self.target, self.root = win, target, win.root
+        self.meta = penv.BACKENDS[target]
+        self.current = penv.current_backend(self.root)
+        self.env = penv.env_dir(self.root, target)
+        self.prepared = (self.env / "python.exe").exists()
+        self.job = None
+        self.step_labels = {}
+        self.step_titles = {}
+        self.setWindowTitle(tr("Переключение платформы"))
+        self.setMinimumWidth(660)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        head = QLabel("<b>" + html.escape(tr("Переключение на {0}", self.meta["label"])) + "</b>")
+        lay.addWidget(head)
+        lay.addWidget(muted(tr("Модели, ноды, workflow, input и output не изменятся. Меняется только окружение Python.")))
+
+        self.lbl_warn = QLabel()
+        self.lbl_warn.setWordWrap(True)
+        self.lbl_warn.setTextFormat(Qt.RichText)
+        lay.addWidget(self.lbl_warn)
+        self.lbl_info = QLabel()
+        self.lbl_info.setWordWrap(True)
+        self.lbl_info.setTextFormat(Qt.RichText)
+        lay.addWidget(self.lbl_info)
+
+        self.box_extract = QWidget()
+        el = QVBoxLayout(self.box_extract)
+        el.setContentsMargins(0, 0, 0, 0)
+        el.addWidget(QLabel("<b>" + html.escape(tr("Как распаковать архив")) + "</b>"))
+        self.rb_7zip = QRadioButton()
+        self.rb_py7zr = QRadioButton(tr("Установить py7zr в python_embeded · медленнее, но ничего ставить вручную не нужно"))
+        el.addWidget(self.rb_7zip)
+        row = QHBoxLayout()
+        self.lbl_7zip_link = QLabel(f'<a href="{SEVENZIP_PAGE}" style="color:{C["CYAN"]};">{html.escape(tr("Скачать 7-Zip с официального сайта"))}</a>')
+        self.lbl_7zip_link.setOpenExternalLinks(True)
+        self.btn_rescan = button(tr("Проверить снова"), self._scan_7zip)
+        row.addSpacing(24)
+        row.addWidget(self.lbl_7zip_link)
+        row.addWidget(self.btn_rescan)
+        row.addStretch()
+        el.addLayout(row)
+        el.addWidget(self.rb_py7zr)
+        self.chk_remember = QCheckBox(tr("Запомнить выбор (меняется в Настройках → Платформа)"))
+        self.chk_remember.setChecked(True)
+        el.addWidget(self.chk_remember)
+        lay.addWidget(self.box_extract)
+        self.box_extract.setVisible(not self.prepared)
+
+        self.chk_backup = QCheckBox(tr("Создать точку восстановления перед переключением (занимает дополнительное место на диске)"))
+        self.chk_backup.setChecked(True)
+        lay.addWidget(self.chk_backup)
+
+        lay.addWidget(QLabel("<b>" + html.escape(tr("Шаги")) + "</b>"))
+        self.steps_box = QVBoxLayout()
+        self.steps_box.setSpacing(3)
+        lay.addLayout(self.steps_box)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(8)
+        lay.addWidget(self.bar)
+        self.lbl_status = muted("", True)
+        lay.addWidget(self.lbl_status)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self.btn_cancel = button(tr("Отмена"), self.reject)
+        self.btn_start = button(tr("Переключить") if self.prepared else tr("Подготовить и переключить"), self._start, "Accent")
+        buttons.addWidget(self.btn_cancel)
+        buttons.addWidget(self.btn_start)
+        lay.addLayout(buttons)
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(300)
+        self.timer.timeout.connect(self._poll)
+        self.chk_backup.toggled.connect(self._rebuild_steps)
+        self.rb_7zip.toggled.connect(self._rebuild_steps)
+        self._scan_7zip()
+        self._fill_info()
+        self._rebuild_steps()
+
+    # ── сведения до запуска ──
+    def _scan_7zip(self):
+        self.sevenzip = penv_install.find_7zip()
+        pref = self.win.cfg.get("backend_extract", "auto")
+        if self.sevenzip:
+            self.rb_7zip.setText(tr("Использовать 7-Zip · найден: {0}", self.sevenzip))
+        else:
+            self.rb_7zip.setText(tr("Использовать 7-Zip · не найден"))
+        self.rb_7zip.setEnabled(bool(self.sevenzip))
+        self.lbl_7zip_link.setVisible(not self.sevenzip)
+        self.btn_rescan.setVisible(not self.sevenzip)
+        use_7zip = bool(self.sevenzip) and pref in ("auto", "7zip")
+        self.rb_7zip.setChecked(use_7zip)
+        self.rb_py7zr.setChecked(not use_7zip)
+
+    def _fill_info(self):
+        warn, info = [], []
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            names = penv.detect_gpus()
+        finally:
+            QApplication.restoreOverrideCursor()
+        a = penv.gpu_assessment(names, self.target)
+        label = self.meta["label"].split(" ")[0]
+        if names and not a["found"]:
+            warn.append(tr("Видеокарта {0} не найдена в этом компьютере. Переключение возможно, но ComfyUI на этой платформе не запустится, пока такой карты нет.", label))
+        elif a["found"] and a["support"] == "uncertain":
+            warn.append(tr("{0}: официальная поддержка ROCm на Windows для этой карты не подтверждена. Попробовать можно, но возможны ошибки.", a["name"]))
+        elif a["found"] and a["support"] == "unsupported":
+            warn.append(tr("{0}: эта карта не входит в список поддерживаемых ROCm на Windows. Скорее всего, ComfyUI на AMD не заработает.", a["name"]))
+        if self.meta.get("experimental"):
+            warn.append(tr("Функция экспериментальная: проверена без реальной видеокарты этой платформы."))
+        if not self.prepared:
+            try:
+                free = shutil.disk_usage(self.root).free
+            except OSError:
+                free = None
+            if free is not None:
+                low = free < 12 * 1024 ** 3
+                text = tr("Нужно место под архив и распакованное окружение — несколько ГБ. Свободно на диске: {0}", fmt_size(free))
+                info.append(f'<span style="color:{C["RED"] if low else C["MUTED"]}">{html.escape(text)}' +
+                            (" · " + html.escape(tr("места может не хватить")) if low else "") + "</span>")
+            info.append(html.escape(tr("Архив скачивается с GitHub (официальная сборка ComfyUI) и удаляется после распаковки.")))
+        bad = penv.incompatible_packages(penv.active_dir(self.root), self.target)
+        if bad:
+            info.append(html.escape(tr("Не заработают на этой платформе: {0}", ", ".join(sorted(bad)))))
+        self.lbl_warn.setText("".join(f'<p style="color:{C["YELLOW"]}">⚠ {html.escape(w)}</p>' for w in warn))
+        self.lbl_warn.setVisible(bool(warn))
+        self.lbl_info.setText("<br>".join(info))
+        self.lbl_info.setVisible(bool(info))
+
+    def _step_keys(self):
+        keys = []
+        if self.chk_backup.isChecked():
+            keys.append(("backup", tr("Точка восстановления")))
+        if not self.prepared:
+            keys += [("download", tr("Скачивание архива")), ("extract", tr("Распаковка python_embeded"))]
+            if not getattr(sys, "frozen", False):
+                keys.append(("launcher", tr("Зависимости лаунчера")))
+            keys.append(("deps", tr("Зависимости ComfyUI и custom-нод")))
+        elif penv.needs_dependency_sync(self.root, self.target):
+            keys.append(("deps", tr("Зависимости новых custom-нод")))
+        keys.append(("switch", tr("Переключение, проверка torch и перезапуск лаунчера")))
+        return keys
+
+    def _rebuild_steps(self, *_):
+        if self.job:
+            return
+        while self.steps_box.count():
+            w = self.steps_box.takeAt(0).widget()
+            if w:
+                w.hide()          # deleteLater срабатывает не сразу: без hide/setParent старая подпись остаётся поверх новых
+                w.setParent(None)
+                w.deleteLater()
+        self.step_labels.clear()
+        self.step_titles.clear()
+        for key, title in self._step_keys():
+            lab = QLabel()
+            lab.setTextFormat(Qt.RichText)
+            self.steps_box.addWidget(lab)
+            self.step_labels[key], self.step_titles[key] = lab, title
+            self._set_step(key, "wait")
+
+    def _set_step(self, key, state, extra=""):
+        lab = self.step_labels.get(key)
+        if not lab:
+            return
+        icon, color = self.ICONS[state]
+        text = html.escape(self.step_titles[key]) + (f' <span style="color:{C["MUTED"]}">· {html.escape(extra)}</span>' if extra else "")
+        lab.setText(f'<span style="color:{C[color]}">{icon}</span>&nbsp; {text}')
+
+    # ── запуск ──
+    def _start(self):
+        win = self.win
+        if win.running or win.tasks.busy or win.dl_tasks.busy or win.transferring or getattr(win, "_backup_job", None):
+            QMessageBox.information(self, APP_TITLE, tr("Останови ComfyUI и дождись окончания обновлений, переноса, загрузок и работы с бэкапами."))
+            return
+        method = "7zip" if self.rb_7zip.isChecked() and self.sevenzip else "py7zr"
+        if not self.prepared and self.chk_remember.isChecked():
+            win._set_cfg("backend_extract", method)
+        keys = [k for k, _ in self._step_keys()]
+        self._rebuild_steps()
+        self.btn_start.setEnabled(False)
+        self.btn_cancel.setText(tr("Отмена"))
+        for w in (self.box_extract, self.chk_backup):
+            w.setEnabled(False)
+        run = [k for k in keys if k != "switch"]
+        if not run:
+            self._do_switch()
+            return
+        self.job = dict(step=None, done=[], frac=0.0, text="", cancel=False, lines=[], warnings=[])
+        job, sevenzip = self.job, self.sevenzip
+        conns = int(win.cfg.get("dl_connections", 8))
+        run_in_thread(win._bridge, ("platform_job", id(job)), lambda: self._work(job, run, method, sevenzip, conns))
+        self.timer.start()
+
+    def _work(self, job, keys, method, sevenzip, conns):
+        """Фоновый поток: только ввод-вывод и модули nd_backend*, без обращений к виджетам."""
+        root, target, win = self.root, self.target, self.win
+        py = win.python_exe
+        env_py = self.env / "python.exe"
+        say = job["lines"].append
+        cancel = lambda: job["cancel"]   # noqa: E731
+
+        def stage(key):
+            if job["step"] and job["step"] not in job["done"]:
+                job["done"].append(job["step"])
+            job.update(step=key, frac=0.0, text="")
+        archive = None
+        for key in keys:
+            stage(key)
+            if key == "backup":
+                backup.create(root, win._backup_store(), label=tr("Перед переключением на {0}", self.meta["label"]), reason="platform",
+                              keep=int(win.cfg.get("backup_keep", 10)), progress=lambda f, t: job.update(frac=f, text=str(t)), cancel=cancel)
+            elif key == "download":
+                def on_dl(line):
+                    clean = ANSI_RE.sub("", line)
+                    m = DL_PROGRESS_RE.search(clean)
+                    if m:
+                        job.update(frac=min(1.0, int(m.group(1)) / 100), text=f"{m.group(2)} / {m.group(3)} · {m.group(4)}" + tr("/с"))
+                    elif clean.strip():
+                        say(clean)
+                archive = penv_install.download_archive(root, target, py, FAST_DL_SCRIPT, connections=conns, on_line=on_dl, cancel=cancel)
+            elif key == "extract":
+                if method == "py7zr" and not penv_install.py7zr_available(py):
+                    say(tr("Ставлю py7zr в python_embeded…"))
+                    code = penv_install.run_streaming(penv_install.py7zr_install_command(py), say, cancel)
+                    if code != 0 or not penv_install.py7zr_available(py):
+                        raise penv_install.InstallError(tr("Не удалось установить py7zr (код {0}). Проверь интернет или поставь 7-Zip.", code))
+                archive = archive or penv_install.archive_path(root, target)
+                penv_install.extract_environment(root, target, archive, method, sevenzip=sevenzip, python_exe=py,
+                                                 progress=lambda p: job.update(frac=p / 100), log=say, cancel=cancel)
+                try:
+                    Path(archive).unlink()
+                except OSError:
+                    pass
+            elif key == "launcher":
+                code = penv_install.run_streaming(penv_install.pyside_command(env_py), say, cancel)
+                if code != 0:
+                    job["warnings"].append(tr("Не удалось поставить PySide6 в новое окружение (код {0}); при запуске лаунчер попробует ещё раз.", code))
+            elif key == "deps":
+                names = [n for n, _ in penv_install.sync_plan(root, env_py, "x")]
+                total = max(1, len(names))
+                seen = []
+
+                def on_dep(line):
+                    m = re.match(r"Зависимости: (.+)$", line)
+                    if m:
+                        seen.append(m.group(1))
+                        job.update(frac=len(seen) / total, text=m.group(1))
+                    else:
+                        say(line)
+                res = penv_install.sync_dependencies(root, target, self.env, env_py,
+                                                     log=lambda m: on_dep(m) if m.startswith("Зависимости: ") else say(m), cancel=cancel)
+                for name, code in res["failed"]:
+                    job["warnings"].append(tr("Зависимости {0} не установились (код {1}) — часть функций может не работать на этой платформе.", name, code))
+        stage(None)
+        return True
+
+    def _poll(self):
+        job = self.job
+        if not job:
+            return
+        while job["lines"]:
+            self.win.console.feed(job["lines"].pop(0) + "\n", "platform")
+        for key in job["done"]:
+            self._set_step(key, "done")
+        if job["step"]:
+            pct = int(job["frac"] * 100)
+            self._set_step(job["step"], "work", (f"{pct}%" + (f" · {job['text']}" if job["text"] else "")) if (pct or job["text"]) else "")
+        self.bar.setValue(int(job["frac"] * 1000))
+
+    def _on_job(self, job_id, result, error):
+        job = self.job
+        if not job or id(job) != job_id:
+            return
+        self.timer.stop()
+        self._poll()
+        self.job = None
+        if error is not None:
+            cancelled = isinstance(error, (penv_install.Cancelled, backup.Cancelled))
+            if job["step"]:
+                self._set_step(job["step"], "error")
+            self.lbl_status.setText(tr("Отменено. Уже скачанное сохранено — можно продолжить позже.") if cancelled else tr("Ошибка: {0}", error))
+            if not cancelled:
+                self.win.console.system(tr("Подготовка платформы: {0}", error), error=True)
+            self.btn_start.setText(tr("Повторить"))
+            self.btn_start.setEnabled(True)
+            self.btn_cancel.setText(tr("Закрыть"))
+            for w in (self.box_extract, self.chk_backup):
+                w.setEnabled(True)
+            return
+        for w in job["warnings"]:
+            self.win.console.system(w, error=True)
+        for key in self.step_labels:
+            if key != "switch":
+                self._set_step(key, "done")
+        self.bar.setValue(1000)
+        self.prepared = True
+        self._do_switch()
+
+    def _do_switch(self):
+        self._set_step("switch", "work")
+        self.lbl_status.setText(tr("Переключаю и перезапускаю лаунчер…"))
+        QApplication.processEvents()
+        if not self.win._perform_platform_switch(self.target):
+            self._set_step("switch", "error")
+            self.lbl_status.setText(tr("Переключение не удалось — сборка не изменена."))
+            self.btn_start.setText(tr("Повторить"))
+            self.btn_start.setEnabled(True)
+            self.btn_cancel.setText(tr("Закрыть"))
+            return
+        self.accept()
+
+    def reject(self):
+        if self.job:
+            self.job["cancel"] = True
+            self.btn_cancel.setEnabled(False)
+            self.lbl_status.setText(tr("Останавливаю…"))
+            QTimer.singleShot(4000, lambda: self.btn_cancel.setEnabled(True))
+            return
+        super().reject()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, cli=None):
         super().__init__()
         cli = cli or parse_cli([])
+        self.setAcceptDrops(True)
         self.cfg = load_config()
         set_lang(self.cfg.get("lang", "ru"))
         apply_theme(self.cfg.get("theme", DEFAULT_THEME))
@@ -2640,6 +3814,7 @@ class MainWindow(QMainWindow):
             self.apply_profile(cli["profile"])
         QTimer.singleShot(1000, self._check_launcher_update)
         QTimer.singleShot(500, self._start_browser_bridge)
+        QTimer.singleShot(1200, self._platform_startup)
         QApplication.instance().aboutToQuit.connect(self._stop_browser_bridge)
 
     # ── paths ──
@@ -2919,6 +4094,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.btn_del_preset)
         prl.addLayout(row)
         lay.addWidget(pr)
+        self._build_platform_panel(lay)
         self._fill_presets()
 
         grid = QGridLayout()
@@ -2988,10 +4164,19 @@ class MainWindow(QMainWindow):
                                           tr("Позволяет загружать в ComfyUI большие видео и картинки (по умолчанию лимит 100 МБ)."), option=False)
         for chk, key in ((self.chk_arg_manager, "arg_manager"), (self.chk_arg_legacy, "arg_manager_legacy"),
                          (self.chk_arg_upload, "arg_upload")):
-            chk.setChecked(bool(self.cfg.get(key, True)))
+            chk.setChecked(bool(self.cfg.get(key, key != "arg_manager_legacy")))
             chk.toggled.connect(self._on_misc_changed)
-            exl.addWidget(chk)
+            if chk is self.chk_arg_manager:
+                mrow = QHBoxLayout()
+                mrow.addWidget(chk, 1)
+                self.btn_manager_install = button(tr("Установить"), self.install_manager)
+                self.btn_manager_install.setToolTip(tr("Ставит встроенный ComfyUI-Manager (Extensions) и его зависимости из ComfyUI\\manager_requirements.txt."))
+                mrow.addWidget(self.btn_manager_install)
+                exl.addLayout(mrow)
+            else:
+                exl.addWidget(chk)
         self.chk_arg_legacy.setEnabled(self.chk_arg_manager.isChecked())
+        self._refresh_manager_button()
         self.edit_extra = QLineEdit(self.cfg.get("extra_args", ""))
         self.edit_extra.setPlaceholderText(tr('например:  --cuda-device 0  --output-directory D:\\renders'))
         self.edit_extra.textChanged.connect(self._on_misc_changed)
@@ -3050,6 +4235,8 @@ class MainWindow(QMainWindow):
             self.lbl_progress.setText(text[-80:])
             self.pbar.show()
         lay.addWidget(self.console, 1)
+        self.task_bar = TaskActivityBar(self)
+        lay.addWidget(self.task_bar)
         return page
 
     # ── страница: воркфлоу ──
@@ -3062,7 +4249,12 @@ class MainWindow(QMainWindow):
         top.addWidget(self.edit_wf_search, 1)
         top.addWidget(button(tr('↻  Обновить'), self.refresh_workflows))
         top.addWidget(button(tr('Открыть папку'), lambda: self._open_dir(self.workflows_dir)))
+        top.addWidget(button(tr('Установить воркфлоу…'), self._pick_workflows, "Accent"))
         lay.addLayout(top)
+        self.wf_drop = WfDropZone()
+        self.wf_drop.dropped.connect(self._install_workflows_from_paths)
+        self.wf_drop.clicked.connect(self._pick_workflows)
+        lay.addWidget(self.wf_drop)
         self.lbl_wf = muted("")
         lay.addWidget(self.lbl_wf)
 
@@ -3594,7 +4786,7 @@ class MainWindow(QMainWindow):
         dlg.setWindowTitle(tr("Расширение для браузера"))
         dlg.setMinimumWidth(620)
         layout = QVBoxLayout(dlg)
-        layout.addWidget(muted(tr("Выбери браузер для установки расширения. Браузер ComfyUI не изменится."), True))
+        layout.addWidget(muted(tr("Выбери браузер, в котором откроется страница расширения. Браузер ComfyUI не изменится."), True))
         combo = QComboBox()
         combo.setMinimumContentsLength(28)
         preferred = self.cfg.get("extension_browser") or self.cfg.get("browser") or ""
@@ -3627,18 +4819,38 @@ class MainWindow(QMainWindow):
         layout.addLayout(row)
         if not rows:
             layout.addWidget(muted(tr("Поддерживаемые браузеры не найдены. Укажи установленный или portable-браузер через «Обзор…»."), True))
-        instructions = QLabel(tr("Лаунчер подготовит расширение и откроет Проводник с выделенной папкой. Её можно перетащить на страницу расширений, если браузер это поддерживает, или выбрать через «Загрузить распакованное расширение»."))
+        instructions = QLabel(tr("Официальное расширение опубликовано в Chrome Web Store. Лаунчер откроет его страницу в выбранном браузере, останется нажать «Установить». После установки вставь ключ подключения."))
         instructions.setWordWrap(True)
-        instructions.setMinimumHeight(100)
+        instructions.setMinimumHeight(70)
         instructions.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(instructions)
+        opera_note = muted(tr("Opera не ставит расширения из Chrome Web Store сама: сначала добавь в неё дополнение «Install Chrome Extensions», затем открой страницу расширения."), True)
+        opera_note.hide()
+        layout.addWidget(opera_note)
         target_edit = QLineEdit()
         target_edit.setReadOnly(True)
         target_edit.hide()
         layout.addWidget(target_edit)
+        def update_opera_note(*_):
+            selected = combo.currentData()
+            opera_note.setVisible(bool(selected) and needs_store_addon(browser_spec(selected[0], combo.currentText(), catalog)))
+        def open_store():
+            selected = combo.currentData()
+            if not selected:
+                return
+            exe = selected[0]
+            try:
+                open_store_page(exe)
+                self._set_cfg("extension_browser", exe)
+                instructions.setText(tr("Страница расширения открыта в браузере. Нажми «Установить», затем скопируй ключ подключения и вставь его в расширение."))
+            except OSError as exc:
+                instructions.setText(tr("Не удалось открыть браузер: {0}", exc))
+        def copy_store_link():
+            QGuiApplication.clipboard().setText(STORE_URL)
+            instructions.setText(tr("Ссылка на расширение скопирована: {0}", STORE_URL))
         def copy_path():
             QGuiApplication.clipboard().setText(target_edit.text())
-        def install():
+        def install_manual():
             selected = combo.currentData()
             if not selected:
                 return
@@ -3654,19 +4866,25 @@ class MainWindow(QMainWindow):
                 reveal_in_explorer(target)
                 self._set_cfg("extension_browser", exe)
                 instructions.setText(tr("Папка расширения выделена в Проводнике, путь скопирован. Открой {0} в выбранном браузере. Перетащи туда папку или включи режим разработчика и выбери «Загрузить распакованное расширение». Затем вставь ключ подключения.", url))
-                copy_btn.setEnabled(True)
             except (OSError, ValueError) as exc:
                 instructions.setText(tr("Не удалось подготовить расширение: {0}", exc))
+        store_btn = button(tr("Открыть страницу в Chrome Web Store"), open_store, "Accent")
+        store_btn.setEnabled(combo.count() > 0)
+        def on_browser_changed(*_):
+            store_btn.setEnabled(combo.currentData() is not None)
+            update_opera_note()
+        combo.currentIndexChanged.connect(on_browser_changed)
+        update_opera_note()
+        layout.addWidget(store_btn)
         buttons = QHBoxLayout()
-        install_btn = button(tr("Подготовить и открыть папку"), install, "Accent")
-        install_btn.setEnabled(combo.count() > 0)
-        combo.currentIndexChanged.connect(lambda _: install_btn.setEnabled(combo.currentData() is not None))
-        layout.addWidget(install_btn)
-        copy_btn = button(tr("Скопировать путь"), copy_path)
-        copy_btn.setEnabled(False)
-        buttons.addWidget(copy_btn)
+        buttons.addWidget(button(tr("Скопировать ссылку"), copy_store_link))
         buttons.addWidget(button(tr("Скопировать ключ подключения"), self._copy_browser_key))
         layout.addLayout(buttons)
+        layout.addWidget(muted(tr("Если магазин недоступен, расширение можно поставить вручную из папки лаунчера."), True))
+        manual_btn = button(tr("Установить вручную из папки"), install_manual)
+        manual_btn.setEnabled(combo.count() > 0)
+        combo.currentIndexChanged.connect(lambda _: manual_btn.setEnabled(combo.currentData() is not None))
+        layout.addWidget(manual_btn)
         dlg.exec()
 
     def _copy_browser_key(self):
@@ -3844,6 +5062,19 @@ class MainWindow(QMainWindow):
     def _on_bridge(self, tag, result, error):
         if isinstance(tag, tuple) and tag[0] == "backup_job":
             return self._on_backup_job(tag[1], result, error)
+        if isinstance(tag, tuple) and tag[0] == "platform_job":
+            dlg = getattr(self, "_platform_dialog", None)
+            return dlg._on_job(tag[1], result, error) if dlg else None
+        if isinstance(tag, tuple) and tag[0] == "wf_analyze":
+            dlg = getattr(self, "_wf_dialog", None)
+            return dlg._on_analyzed(result, error) if dlg is not None and id(dlg) == tag[1] else None
+        if isinstance(tag, tuple) and tag[0] == "wf_deps":
+            dlg = getattr(self, "_wf_dialog", None)
+            return dlg._on_deps_checked(result, error) if dlg is not None and id(dlg) == tag[1] else None
+        if isinstance(tag, tuple) and tag[0] == "platform_delete":
+            return self._on_platform_deleted(tag[1], error)
+        if isinstance(tag, tuple) and tag[0] == "backup_list":
+            return self._on_backup_list(tag[1], result, error)
         if isinstance(tag, tuple) and tag[0] == "backup_refresh":
             return self._on_backup_refresh(tag[1], result, error)
         if isinstance(tag, tuple) and tag[0] == "mp_status":
@@ -4077,7 +5308,7 @@ class MainWindow(QMainWindow):
         # Only source URL, credentials, optional hash and overwrite policy differ.
         source = info["source"]
         sha = f.get("sha256") or ""
-        if source == "browser":
+        if source in ("browser", "workflow"):
             from urllib.parse import urlsplit
             civ_hosts = {"civitai.red", "www.civitai.red", "civitai.com", "www.civitai.com"}
             hf_hosts = {"huggingface.co", "www.huggingface.co"}
@@ -4102,7 +5333,7 @@ class MainWindow(QMainWindow):
                 env.update(ND_DL_REFRESH_URL=original, ND_DL_REFRESH_TOKEN=host_token(original_host))
             if is_endpoint and f["url"] != original:
                 env["ND_DL_FALLBACK_URL"] = f["url"]
-            label = "Browser"
+            label = "Browser" if source == "browser" else tr("Воркфлоу")
         elif source == "hf" and self.chk_hf_cli.isChecked():
             return self._dl_step_hf_cli(q, f, info)
         elif source == "hf":
@@ -5190,6 +6421,13 @@ class MainWindow(QMainWindow):
             h.resizeSection(c, max(base, fm.horizontalAdvance(sample) + 36 if sample else base))
         h.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.tree_backups.itemSelectionChanged.connect(self._update_backup_controls)
+        self.lbl_backup_loading = muted("")
+        self.lbl_backup_loading.setVisible(False)
+        lpl.addWidget(self.lbl_backup_loading)
+        self._spin_i = 0
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(110)
+        self._spin_timer.timeout.connect(self._spin_backup_loading)
         lpl.addWidget(self.tree_backups, 1)
         brow = QHBoxLayout()
         self.btn_backup_restore = button(tr("Восстановить…"), self._restore_backup, "Accent")
@@ -5244,6 +6482,11 @@ class MainWindow(QMainWindow):
         why = reasons.get(p.get("reason", ""), "")
         return " · ".join(x for x in (label, why) if x) or "—"
 
+    @staticmethod
+    def _backup_own_size(st):
+        """Сколько данных записала именно эта точка (сжатые новые файлы). Для старых точек без этого поля — несжатый размер новых данных."""
+        return st.get("stored_bytes", st.get("new_bytes", st.get("disk_bytes", st.get("bytes", 0))))
+
     def _render_backups(self):
         if not hasattr(self, "tree_backups"):
             return
@@ -5257,11 +6500,11 @@ class MainWindow(QMainWindow):
             ver = " ".join(x for x in (comfy.get("version", ""), (comfy.get("commit") or "")[:7]) if x)
             st = p.get("stats") or {}
             it = QTreeWidgetItem([created, self._backup_label(p), ver or "—", str(len(nodes)),
-                                  fmt_size(st.get("disk_bytes", st.get("bytes", 0)))])
+                                  fmt_size(self._backup_own_size(st))])
             it.setData(0, Qt.UserRole, p["id"])
             new = st.get("new_bytes", 0)
-            it.setToolTip(4, tr("На диске (сжато): {0} · без сжатия: {1}", fmt_size(st.get("disk_bytes", 0)), fmt_size(st.get("bytes", 0)))
-                          + "\n" + tr("Новых данных в этой точке: {0} (на диске {1})", fmt_size(new), fmt_size(st.get("stored_bytes", new))))
+            it.setToolTip(4, tr("Занимает только эта точка: {0} (новые данные, сжатые). Остальное она берёт из предыдущих точек.", fmt_size(self._backup_own_size(st)))
+                          + "\n" + tr("Полный размер сборки в точке: {0} (на диске {1}, без сжатия {2})", fmt_size(st.get("bytes", 0)), fmt_size(st.get("disk_bytes", 0)), fmt_size(st.get("bytes", 0))))
             self.tree_backups.addTopLevelItem(it)
         self._update_backup_controls()
 
@@ -5279,11 +6522,41 @@ class MainWindow(QMainWindow):
         if not busy:
             self.lbl_backup_progress.setText("")
 
+    def _spin_backup_loading(self):
+        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        self._spin_i = (self._spin_i + 1) % len(frames)
+        self.lbl_backup_loading.setText(f'<span style="color:{C["CYAN"]}">{frames[self._spin_i]}</span>&nbsp; ' + html.escape(tr("Обновление списка точек восстановления…")))
+
+    def _set_backup_loading(self, on):
+        if not hasattr(self, "lbl_backup_loading"):
+            return
+        self.lbl_backup_loading.setVisible(on)
+        if on:
+            self._spin_backup_loading()
+            self._spin_timer.start()
+        else:
+            self._spin_timer.stop()
+
+    def _update_backup_store_label(self):
+        used = getattr(self, "_backup_used", None)
+        if used is not None:
+            self.lbl_backup_store.setText(tr("Точек этой сборки: {0} · хранилище занимает {1}", len(self._backup_points), fmt_size(used)))
+
+    def _on_backup_list(self, seq, result, error):
+        if seq != self._backup_estimate_seq or not hasattr(self, "lbl_backup_estimate"):
+            return
+        self._set_backup_loading(False)
+        if error is None:
+            self._backup_points = result
+            self._render_backups()
+            self._update_backup_store_label()
+
     def _refresh_backups(self):
-        """Список точек и оценка размера новой точки (подсчёт файлов — в фоне)."""
+        """Список точек (быстро) и оценка размера новой точки (подсчёт файлов — медленнее): два фоновых потока."""
         store = self._backup_store()
         if not store:
             self._backup_points = []
+            self._set_backup_loading(False)
             self._render_backups()
             return
         root = self.root
@@ -5292,23 +6565,27 @@ class MainWindow(QMainWindow):
         if hasattr(self, "lbl_backup_estimate"):
             self.lbl_backup_estimate.setText(tr("Считаю размер новой точки…"))
 
+        def work_list():
+            return backup.fill_disk_sizes(store, backup.list_points(store, root))
+
         def work():
-            pts = backup.fill_disk_sizes(store, backup.list_points(store, root))
             est = backup.estimate(root, store)
             free, anchor = disk_free(store)
-            return pts, est, free, anchor, backup.store_size(store)
+            return est, free, anchor, backup.store_size(store)
+        self._set_backup_loading(True)
+        run_in_thread(self._bridge, ("backup_list", seq), work_list)
         run_in_thread(self._bridge, ("backup_refresh", seq), work)
 
     def _on_backup_refresh(self, seq, result, error):
         if seq != self._backup_estimate_seq or not hasattr(self, "lbl_backup_estimate"):
             return
         if error is not None:
+            self._set_backup_loading(False)
             self.lbl_backup_estimate.setText(html.escape(tr("Не удалось оценить размер: {0}", error)))
             return
-        pts, est, free, anchor, used = result
-        self._backup_points = pts
-        self._render_backups()
-        self.lbl_backup_store.setText(tr("Точек этой сборки: {0} · хранилище занимает {1}", len(pts), fmt_size(used)))
+        est, free, anchor, used = result
+        self._backup_used = used
+        self._update_backup_store_label()
         need = est["new_bytes"]
         ok = free is None or free > need * 1.05 + 200 * 1024 * 1024
         color = C["GREEN"] if ok else C["RED"]
@@ -5609,7 +6886,7 @@ class MainWindow(QMainWindow):
         self.chk_browser_show.setChecked(bool(self.cfg.get("browser_show_downloads", True)))
         self.chk_browser_show.toggled.connect(lambda v: self._set_cfg("browser_show_downloads", v))
         cpl.addWidget(self.chk_browser_show)
-        cpl.addWidget(muted(tr('Установи расширение в выбранный Chromium-браузер и вставь ключ подключения. Путь сохранения выбирается в браузере.')))
+        cpl.addWidget(muted(tr('Установи официальное расширение из Chrome Web Store в Chromium-браузер и вставь ключ подключения. Путь сохранения выбирается в браузере.')))
         browser_buttons = QVBoxLayout()
         browser_buttons.addWidget(button(tr("Установить расширение браузера"), self._install_chrome_extension))
         browser_buttons.addWidget(button(tr('Скопировать ключ подключения'), self._copy_browser_key))
@@ -5675,6 +6952,8 @@ class MainWindow(QMainWindow):
         tl.addWidget(muted(tr("Тема применяется сразу и запоминается.")))
         lay.addWidget(tp)
 
+        self._build_platform_settings(lay)
+
         ap, al = panel(tr('О лаунчере'))
         al.addWidget(QLabel(f"<b>{APP_TITLE}</b> &nbsp;v{VERSION}"))
         al.addWidget(muted(tr('Сделано для сборок {0}.', BRAND_NAME)))
@@ -5688,6 +6967,208 @@ class MainWindow(QMainWindow):
         lay.addWidget(ap)
         lay.addStretch()
         return page
+
+
+    # ── платформа сборки: NVIDIA / AMD ──
+    # Логика — в nd_backend.py и nd_backend_install.py; здесь панели, запуск диалога и обработка результата после перезапуска.
+    def _platform_supported(self):
+        return sys.platform == "win32" and bool(self.root) and self.python_exe.is_file()
+
+    def _build_platform_panel(self, lay):
+        self.platform_panel, pl = panel(tr("Платформа"))
+        self.lbl_platform = QLabel()
+        self.lbl_platform.setTextFormat(Qt.RichText)
+        self.lbl_platform.setWordWrap(True)
+        pl.addWidget(self.lbl_platform)
+        row = QHBoxLayout()
+        self.cb_platform = QComboBox()
+        self.cb_platform.setMinimumWidth(260)
+        self.btn_platform = button(tr("Переключить…"), self._open_platform_dialog)
+        row.addWidget(self.cb_platform, 1)
+        row.addWidget(self.btn_platform)
+        pl.addLayout(row)
+        pl.addWidget(muted(tr("Модели, ноды, workflow, input и output не затрагиваются: меняется только окружение Python.")))
+        lay.addWidget(self.platform_panel)
+        self._refresh_platform()
+
+    def _refresh_platform(self):
+        if not hasattr(self, "platform_panel"):
+            return
+        ok = self._platform_supported()
+        self.platform_panel.setVisible(ok)
+        if not ok:
+            return
+        cur = penv.current_backend(self.root)
+        info = penv.describe(penv.active_dir(self.root))
+        meta = penv.BACKENDS.get(cur)
+        name = meta["label"] if meta else tr("не определена")
+        bits = [name]
+        if info.get("cuda"):
+            bits.append("CUDA " + str(info["cuda"]))
+        if info.get("hip"):
+            bits.append("ROCm " + str(info["hip"]))
+        if info.get("python"):
+            bits.append("Python " + str(info["python"]))
+        self.lbl_platform.setText(tr("Сейчас: {0}", " · ".join(bits)))
+        prepared = penv.list_envs(self.root)
+        self.cb_platform.clear()
+        for key, m in penv.BACKENDS.items():
+            if key == cur:
+                continue
+            label = m["label"] + (" · " + tr("экспериментально") if m["experimental"] else "")
+            label += " · " + (tr("подготовлена") if key in prepared else tr("не подготовлена"))
+            self.cb_platform.addItem(label, key)
+        self.btn_platform.setEnabled(self.cb_platform.count() > 0)
+
+    def _platform_busy(self):
+        return bool(self.running or self.tasks.busy or self.dl_tasks.busy or self.transferring or getattr(self, "_backup_job", None))
+
+    def _open_platform_dialog(self):
+        target = self.cb_platform.currentData()
+        if not target or not self._platform_supported():
+            return
+        if self._platform_busy():
+            QMessageBox.information(self, APP_TITLE, tr("Останови ComfyUI и дождись окончания обновлений, переноса, загрузок и работы с бэкапами."))
+            return
+        self._platform_dialog = PlatformDialog(self, target)
+        try:
+            self._platform_dialog.exec()
+        finally:
+            self._platform_dialog = None
+            self._refresh_platform()
+            if hasattr(self, "lbl_platform_envs"):
+                self._refresh_platform_settings()
+
+    def _restart_command(self):
+        if getattr(sys, "frozen", False):
+            return f'"{sys.executable}"'
+        bat = app_dir() / "ND_Launcher.bat"
+        if bat.is_file():
+            return f'"{bat}"'
+        pyw = self.root / "python_embeded" / "pythonw.exe"
+        return f'"{pyw}" -s "{Path(__file__).resolve()}"'
+
+    def _perform_platform_switch(self, target):
+        """Готовит журнал и скрипт, запускает его отдельным процессом и закрывает лаунчер. False — ничего не изменилось."""
+        try:
+            plan = penv.begin_switch(self.root, target)
+            helper = penv.write_helper(self.root, plan, os.getpid(), self._restart_command())
+            flags = 0x08000000 | 0x00000200   # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+            env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI") and k != "_MEIPASS2"}
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"   # exe из PyInstaller: новый запуск не должен брать распаковку старого
+            subprocess.Popen(["cmd", "/c", str(helper)], cwd=str(self.root), creationflags=flags, close_fds=True, env=env)
+        except Exception as e:
+            self.console.system(tr("Переключение платформы не удалось: {0}", e), error=True)
+            try:
+                penv.recover(self.root)
+            except Exception:
+                pass
+            return False
+        self._platform_quitting = True
+        QTimer.singleShot(300, self.close)
+        return True
+
+    def _platform_startup(self):
+        if not self._platform_supported():
+            return
+        try:
+            res = penv.finish_pending(self.root)
+        except Exception as e:
+            self.console.system(tr("Проверка переключения платформы: {0}", e), error=True)
+            return
+        self._refresh_platform()
+        if not res or res["status"] == "busy":
+            return
+        label = lambda k: penv.BACKENDS.get(k, {}).get("label", k or "?")   # noqa: E731
+        if res["status"] == "done":
+            saved = self.cfg.setdefault("backend_options", {})
+            old = self.current_options()
+            if res.get("from"):
+                saved[res["from"]] = old
+            new, changes = penv.adapt_options(old, res["to"], saved.get(res["to"]))
+            if new != old:
+                self.apply_options(new)
+                self._select_preset(CUSTOM)
+            save_config(self.cfg)
+            lines = [tr("Платформа переключена: {0}.", label(res["to"]))]
+            for key, was, now in changes:
+                if key == "attention":
+                    lines.append(tr("Attention заменён на {0}: Sage/Flash Attention на AMD не работают. При возврате на NVIDIA прежние настройки вернутся.", now))
+                elif key == "fp8_unet":
+                    lines.append(tr("Включён fp8 для UNet: на AMD он работает не со всеми моделями."))
+            self.console.system(lines[0])
+            QMessageBox.information(self, APP_TITLE, "\n\n".join(lines))
+        else:
+            text = tr("Переключение на {0} не удалось, сборка осталась прежней.", label(res.get("to")))
+            if res.get("message"):
+                text += "\n\n" + res["message"]
+            self.console.system(text, error=True)
+            QMessageBox.warning(self, APP_TITLE, text)
+
+    def _build_platform_settings(self, lay):
+        pp, pl = panel(tr("Платформа (NVIDIA / AMD)"))
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr("Распаковка архива:")))
+        self.cb_extract = QComboBox()
+        for data, text in (("auto", tr("Авто")), ("7zip", "7-Zip"), ("py7zr", "py7zr")):
+            self.cb_extract.addItem(text, data)
+        self.cb_extract.setCurrentIndex(max(0, self.cb_extract.findData(self.cfg.get("backend_extract", "auto"))))
+        self.cb_extract.currentIndexChanged.connect(lambda _: self._set_cfg("backend_extract", self.cb_extract.currentData()))
+        row.addWidget(self.cb_extract)
+        row.addStretch()
+        pl.addLayout(row)
+        self.lbl_platform_envs = muted("")
+        pl.addWidget(self.lbl_platform_envs)
+        row = QHBoxLayout()
+        row.addWidget(button(tr("Открыть папку окружений"), lambda: self._open_dir(penv.store_dir(self.root)) if self.root else None))
+        self.btn_platform_delete = button(tr("Удалить неактивное окружение…"), self._delete_platform_env, "Danger")
+        row.addWidget(self.btn_platform_delete)
+        row.addStretch()
+        pl.addLayout(row)
+        lay.addWidget(pp)
+        self._platform_settings_panel = pp
+        self._refresh_platform_settings()
+
+    def _refresh_platform_settings(self):
+        if not hasattr(self, "lbl_platform_envs"):
+            return
+        ok = self._platform_supported()
+        self._platform_settings_panel.setVisible(ok)
+        if not ok:
+            return
+        envs = penv.list_envs(self.root)
+        if envs:
+            text = tr("Подготовлено: {0}", ", ".join(f"{penv.BACKENDS.get(k, {}).get('label', k)} ({fmt_size(penv.dir_size(v))})" for k, v in envs.items()))
+        else:
+            text = tr("Неактивных окружений нет.")
+        self.lbl_platform_envs.setText(text)
+        self.btn_platform_delete.setEnabled(bool(envs))
+
+    def _delete_platform_env(self):
+        envs = penv.list_envs(self.root)
+        if not envs or self._platform_busy():
+            return
+        key = next(iter(envs))
+        if len(envs) > 1:
+            items = [penv.BACKENDS.get(k, {}).get("label", k) for k in envs]
+            item, ok = QInputDialog.getItem(self, APP_TITLE, tr("Какое окружение удалить?"), items, 0, False)
+            if not ok:
+                return
+            key = list(envs)[items.index(item)]
+        label = penv.BACKENDS.get(key, {}).get("label", key)
+        if QMessageBox.question(self, APP_TITLE, tr("Удалить подготовленное окружение {0}? Его можно скачать заново при следующем переключении.", label)) != QMessageBox.Yes:
+            return
+        target = envs[key].parent
+        self.btn_platform_delete.setEnabled(False)
+        run_in_thread(self._bridge, ("platform_delete", key), lambda: shutil.rmtree(target))
+
+    def _on_platform_deleted(self, key, error):
+        if error is not None:
+            self.console.system(tr("Не удалось удалить окружение: {0}", error), error=True)
+        else:
+            self.console.system(tr("Окружение удалено."))
+        self._refresh_platform_settings()
+        self._refresh_platform()
 
     # ── helpers ──
     @staticmethod
@@ -6378,7 +7859,7 @@ class MainWindow(QMainWindow):
                 skipped.append(info["name"])
                 continue
             if git:
-                args = ["clone", "--recursive"] + (["-b", info["branch"]] if info["branch"] else []) + [info["clone"], str(dest)]
+                args = ["clone", "--progress", "--recursive"] + (["-b", info["branch"]] if info["branch"] else []) + [info["clone"], str(dest)]
                 steps.append((f"git clone · {info['name']}", git, args, cn))
             elif info["zip"]:
                 steps.append((tr('Скачивание архива · {0}', info['name']), self.python_exe,
@@ -6398,6 +7879,180 @@ class MainWindow(QMainWindow):
             self.console.system(tr('Git не найден — ноды скачиваются архивом. Обновлять их через лаунчер не получится.'), error=True)
         steps.append(lambda t=targets: self._finish_install(t))
         self.tasks.run(tr('Установка нод ({0})', len(targets)), steps)
+
+    # ── установка воркфлоу «под ключ» ──
+    def _pick_workflows(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, tr("Выбери воркфлоу (.json) или архив (.zip)"), "",
+                                                tr("Воркфлоу (*.json *.zip)"))
+        if paths:
+            self._install_workflows_from_paths(paths)
+
+    def dragEnterEvent(self, ev):
+        if WfDropZone._paths(ev):
+            ev.acceptProposedAction()
+
+    def dropEvent(self, ev):
+        paths = WfDropZone._paths(ev)
+        if paths:
+            ev.acceptProposedAction()
+            self._install_workflows_from_paths(paths)
+
+    def _install_workflows_from_paths(self, paths):
+        if getattr(self, "_wf_dialog", None) is not None:
+            return
+        if not self._ensure_idle(tr("устанавливать воркфлоу")):
+            return
+        bundle = wfi.read_inputs(paths)
+        for name, why in bundle.ignored:
+            self.console.system(tr("Пропущено: {0} — {1}", name, why))
+        for e in bundle.errors:
+            self.console.system(tr("Ошибка чтения: {0}", e), error=True)
+        if not bundle.workflows:
+            QMessageBox.information(self, APP_TITLE, tr("Воркфлоу не найдены: поддерживаются файлы .json и архивы .zip с воркфлоу ComfyUI."))
+            return
+        self.go("workflows")
+        WorkflowInstallDialog(self, bundle).exec()
+
+    def _model_bases(self):
+        """[(путь папки модели по ключу) функции] — корни моделей: сборка и extra_model_paths.yaml."""
+        roots = [dict(label=tr("Эта сборка"), base=self.comfy / "models", folders={})]
+        for r in getattr(self, "dl_roots", []):
+            roots.append(dict(label=r["name"], base=Path(r["base"]), folders={k.lower(): Path(p) for k, p in r["folders"]}))
+        return roots
+
+    def _model_exists(self, folder, name):
+        rel = name.replace("\\", "/")
+        for r in self._model_bases():
+            d = r["folders"].get(folder.lower()) or (r["base"] / folder)
+            if (d / rel).is_file():
+                return True
+        return False
+
+    def _llm_roots(self):
+        out = []
+        for r in self._model_bases():
+            d = r["folders"].get("llm") or (r["base"] / "LLM")
+            if r["folders"] and "llm" not in r["folders"]:
+                continue
+            out.append((r["label"], d))
+        return out
+
+    def _model_dest(self, folder, name):
+        folders, external = self._current_root_folders()
+        d = next((Path(p) for k, p in folders if k.lower() == folder.lower()), None)
+        if d is None:
+            d = self.comfy / "models" / folder
+        return d / name.replace("\\", "/")
+
+    def _checkout_steps(self, git, dest, ver, vers=()):
+        """Версия из воркфлоу. Если разные узлы одной ноды записали разные версии, ставим самую новую из найденных:
+        для коммитов — ту, от которой «происходят» остальные; для тегов — наибольший номер."""
+        def git_ok(*args):
+            try:
+                return subprocess.run([git, *args], cwd=str(dest), capture_output=True, timeout=30,
+                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).returncode == 0
+            except Exception:
+                return True   # не смогли проверить — пробуем как есть
+
+        def has(ref):
+            return git_ok("rev-parse", "-q", "--verify", ref + "^{commit}")
+
+        def resolve(v):
+            cands = [v] if wfi.ver_kind(v) == "commit" else [v, "v" + v, v.lstrip("v")]
+            return next((c for c in cands if has(c)), None)
+
+        def num(ref):
+            return tuple(int(x) for x in re.findall(r"\d+", ref)[:4])
+
+        def run():
+            if not dest.is_dir():
+                return None
+            order = list(dict.fromkeys([ver] + [v for v in vers if v]))
+            found = [(v, r) for v in order for r in [resolve(v)] if r]
+            missing = [v for v in order if v not in [f[0] for f in found]]
+            for v in missing:
+                self.console.system(tr("{0}: версия {1} из воркфлоу не найдена в репозитории.", dest.name, str(v)[:10]))
+            if not found:
+                self.console.system(tr("{0}: оставлена последняя версия.", dest.name))
+                return []
+            best = found[0]
+            if len(found) > 1:
+                if all(wfi.ver_kind(v) == "commit" for v, _ in found):
+                    for v, r in found:
+                        if all(r == o or git_ok("merge-base", "--is-ancestor", o, r) for _, o in found):
+                            best = (v, r)
+                            break
+                    else:
+                        self.console.system(tr("{0}: версии из воркфлоу идут разными ветками — взята самая частая.", dest.name))
+                elif all(wfi.ver_kind(v) == "tag" for v, _ in found):
+                    best = max(found, key=lambda f: num(f[1]))
+                if best[0] != found[0][0] or len(found) > 1:
+                    self.console.system(tr("{0}: в воркфлоу записано версий: {1}; выбрана самая новая — {2}.", dest.name, len(found), str(best[1])[:10]))
+            return [(tr("Версия из воркфлоу · {0} @ {1}", dest.name, str(best[1])[:10]), git, ["checkout", "-q", best[1]], dest)]
+        return run
+
+    def _run_workflow_install(self, targets, deps, models, repair=()):
+        git = find_git(self.root)
+        cn = self.comfy / "custom_nodes"
+        cn.mkdir(parents=True, exist_ok=True)
+        have = self._current_node_names()
+        steps, done, skipped = [], [], []
+        for t in targets:
+            dest = cn / t["name"]
+            if t["name"].lower() in have or dest.exists():
+                skipped.append(t["name"])
+                continue
+            if git:
+                args = ["clone", "--progress", "--recursive"] + (["-b", t["branch"]] if t.get("branch") and not t.get("ver") else []) + [t["clone"], str(dest)]
+                steps.append((f"git clone · {t['name']}", git, args, cn))
+                if t.get("ver"):
+                    steps.append(self._checkout_steps(git, dest, t["ver"], t.get("vers") or ()))
+            elif t["host"] == "github.com":
+                ref = t.get("ver") or t.get("branch") or "HEAD"
+                steps.append((tr("Скачивание архива · {0}", t["name"]), self.python_exe,
+                              ["-s", "-c", ZIP_INSTALL_SCRIPT, f"{t['page']}/archive/{ref}.zip", str(dest)], cn))
+            else:
+                skipped.append(tr("{0} (нужен Git — это не GitHub)", t["name"]))
+                continue
+            if deps:
+                steps.append(lambda d=dest: self._post_install_steps(d))
+            done.append((dict(name=t["name"], page=t["page"]), dest))
+        if skipped:
+            self.console.system(tr("Пропущено (уже установлено или нужен Git): ") + ", ".join(skipped))
+        if done and not git:
+            self.console.system(tr("Git не найден — ноды скачиваются архивом. Обновлять их через лаунчер не получится."), error=True)
+        for path in repair:
+            steps.append(lambda d=Path(path): self._post_install_steps(d))
+        if done:
+            steps.append(lambda t=done: self._finish_install(t))
+            self.tasks.run(tr("Установка нод ({0})", len(done)), steps)
+        elif repair:
+            self.tasks.run(tr("Установка зависимостей нод"), steps)
+        self.refresh_workflows()
+        # модели
+        jobs = []
+        for m in models:
+            dest = self._model_dest(m["folder"], m["name"])
+            if dest.exists():
+                continue
+            jobs.append(dict(name=Path(m["name"]).name, dest=dest, folder=dest.parent, url=m["url"]))
+        if jobs:
+            info = {"source": "workflow"}
+            msteps = []
+            for j in jobs:
+                q = dict(name=j["name"], dest=j["dest"], folder=j["folder"], size=0, status="queued", source="workflow",
+                         f={"url": j["url"], "original_url": j["url"]}, info=info)
+                self.dl_queue.append(q)
+                msteps += self._dl_steps(q)
+            self._render_dl_queue()
+            if self.dl_paused:
+                self.console.system(tr("В очередь загрузок добавлено файлов: {0}", len(jobs)) + " · " + tr("загрузка на паузе"))
+            elif self.dl_tasks.busy:
+                self.dl_tasks.extend(msteps)
+                self.console.system(tr("В очередь загрузок добавлено файлов: {0}", len(jobs)))
+            else:
+                self.dl_tasks.run(tr("Загрузка моделей ({0})", len(jobs)), msteps)
+        self.update_controls()
 
     def _post_install_steps(self, dest: Path):
         if not dest.is_dir():
@@ -6456,7 +8111,36 @@ class MainWindow(QMainWindow):
         self._set_cfg("install_history", [])
         self._fill_install_history()
 
+    def _manager_installed(self):
+        """Встроенный Manager — pip-пакет comfyui_manager в python_embeded (флаг --enable-manager без него не заработает)."""
+        try:
+            sp = self.python_exe.parent / "Lib" / "site-packages"
+            return (sp / "comfyui_manager").is_dir() or any(sp.glob("comfyui_manager-*.dist-info"))
+        except Exception:
+            return True
+
+    def _refresh_manager_button(self):
+        btn = getattr(self, "btn_manager_install", None)
+        if btn is None or not self.root:
+            return
+        try:
+            btn.setVisible(not self._manager_installed())
+        except RuntimeError:
+            pass
+
+    def install_manager(self):
+        if not self._ensure_idle(tr("устанавливать Manager")):
+            return
+        req = self.comfy / "manager_requirements.txt"
+        if not req.is_file():
+            QMessageBox.information(self, APP_TITLE, tr("В этой сборке ComfyUI нет файла manager_requirements.txt — встроенного Manager ещё нет. Обнови ComfyUI на вкладке «Обновления»."))
+            return
+        self.tasks.run(tr("Установка ComfyUI-Manager"), [
+            ("pip · ComfyUI-Manager", self.python_exe, ["-s", "-m", "pip", "install", "-r", str(req)], self.comfy),
+            lambda: self._refresh_manager_button()])
+
     def _on_task_finished(self, title, errors):
+        self._refresh_manager_button()
         if errors:
             self.console.system(tr('{0}: завершено с ошибками ({1}). Пролистай консоль выше.', title, errors), error=True)
         else:
@@ -6977,6 +8661,7 @@ class MainWindow(QMainWindow):
         self.refresh_nodes()
         self.refresh_workflows()
         self._refresh_src_status()
+        self._refresh_platform()
         self.update_controls()
 
     # ── профиль из ярлыка ──
@@ -7267,6 +8952,12 @@ class MainWindow(QMainWindow):
                 pass
 
     def closeEvent(self, e):
+        if getattr(self, "_platform_quitting", False):
+            e.accept()
+            if self.tray:
+                self.tray.hide()
+            QApplication.quit()
+            return
         job = getattr(self, "_backup_job", None)
         if job:   # прерванное восстановление оставит сборку наполовину старой — не даём закрыть
             if job["kind"] != "create":

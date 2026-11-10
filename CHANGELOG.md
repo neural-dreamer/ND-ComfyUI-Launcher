@@ -3,6 +3,27 @@
 All notable changes to ND · ComfyUI Launcher. Versions follow [Semantic Versioning](https://semver.org).
 Each version's section is used as the notes of its GitHub release.
 
+## [1.3.0] — 2026-11-10
+
+Install a workflow together with its nodes and models, a progress bar with reconnect for installs, and an experimental NVIDIA ⇄ AMD platform switch.
+
+### Added
+- **Install a workflow with everything it needs.** On the Workflows tab, drop `.json` files (several at once) or a `.zip` archive onto the new area, click it, or press **Install workflow…**. The launcher reads every node in the workflow, including nodes inside subgraphs, finds the repository of each custom node (links in `Note` / `MarkdownNote` nodes first, then `aux_id`, Comfy Registry and the ComfyUI-Manager node map) and lists the files, nodes and models in one dialog.
+  - Nodes are installed at the version recorded in the workflow by default. If different nodes of one package record different versions, the newest of them is used. “Latest” can be chosen per node or for all checked nodes at once and is marked as not verified with the workflow. A version that does not exist in the repository falls back to the latest one with a note in the console.
+  - When the workflow mentions several forks of one repository you pick the fork. A node with no known source does not block the rest, and you can paste its link.
+  - Missing models with direct links are sent to Model downloads (optional, remembered). A `prompts` folder in an archive goes to `models\LLM\prompts` (with a choice of model root when extra model paths are connected). Existing files can be replaced, skipped or kept side by side. Archives are checked for unsafe paths and size.
+  - The dialog also checks the `requirements.txt` of nodes that are already installed and offers to install the missing packages, for example after an interrupted install.
+- **Install and update progress bar** under the Console: the current step, download progress and speed (pip and git), step time, retries, and a warning when no data has arrived for a while. Pip shows done / total, git shows the amount received. Buttons: **Reconnect** (aborts the current download and starts the step again on a fresh connection — handy right after turning on a VPN), **Skip step** and **Cancel**. Partially cloned folders are removed on reconnect, skip and cancel, and child processes are stopped together with the step.
+- **Install** button next to the ComfyUI-Manager option on the Launch tab: shown while the built-in Manager (Extensions) is not installed; installs it with its dependencies from `ComfyUI\manager_requirements.txt`.
+- **Platform switch (experimental): NVIDIA ⇄ AMD (ROCm)** on the Launch tab. The launcher keeps two `python_embeded` environments side by side: the inactive one is prepared once from the official ComfyUI portable archive (downloaded from GitHub, unpacked with 7-Zip if installed or with `py7zr`), its dependencies are synced from ComfyUI and your enabled custom nodes, then the two folders are swapped by a helper script and the launcher restarts. Models, custom nodes, workflows, input and output are never touched. Optional restore point first (on by default), automatic rollback if `import torch` fails after the swap. On AMD, Sage/Flash Attention are replaced with PyTorch attention, and your previous launch options come back when you switch back. Settings → Platform: unpacking method, prepared environments, delete an inactive one. Windows only; not tested on a real Radeon yet.
+
+### Changed
+- **Classic Manager interface** (`--enable-manager-legacy-ui`) is now off by default (it is switched off once for existing settings).
+- **Browser extension** is now an official Chrome Web Store extension. **Settings → Browser downloads → Install browser extension** opens the store page in the chosen Chromium browser (plus **Copy link**); manual installation from the launcher folder remains as a fallback. README and extension guides updated.
+
+### Fixed
+- **Backups** tab: every restore point showed the size of the whole build. Now each point shows what it takes itself (new compressed data; the full size is in the tooltip), and the list appears at once with a loading indicator while sizes are being calculated.
+
 ## [1.2.0] — 2026-10-25
 
 Restore points for the build, a visual editor for model paths, and Focus mode.

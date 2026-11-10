@@ -18,7 +18,7 @@ ND Launcher was originally developed for **Neural Dreamer** builds ([Patreon](ht
 
 No more `.bat` files and launch flags to remember. ND Launcher starts ComfyUI with the right settings, updates it and your custom nodes, installs new nodes and models, moves everything over from an old build, and keeps the console, GPU stats and your workflows in one place.
 
-Browser extension: [installation and usage](BROWSER_EXTENSION.md).
+Official browser extension for Chromium-based browsers: [install from the Chrome Web Store](https://chromewebstore.google.com/detail/ikiegihpjhkejmbbbdiiombnaihannca) · [usage](BROWSER_EXTENSION.md).
 
 ![ND Launcher](docs/screenshots/launch.png)
 
@@ -26,13 +26,14 @@ Browser extension: [installation and usage](BROWSER_EXTENSION.md).
 
 - **Launch** — ready-made presets (Standard, Save VRAM, Maximum speed, Video & large models, CPU only) plus your own. VRAM mode, attention (SageAttention, FlashAttention), fp8 / fp16, reserved VRAM, LAN access and port as simple controls. One-click desktop shortcut that starts ComfyUI right away, optionally minimized to the tray.
 - **Console** — ComfyUI output inside the window with errors highlighted, generation progress, and a GPU monitor (VRAM, load, temperature).
-- **Workflows** — every workflow in the build, searchable, with a description panel: what it does, how to use it, and which models it needs, checked against the models you actually have.
+- **Workflows** — every workflow in the build, searchable, with a description panel: what it does, how to use it, and which models it needs, checked against the models you actually have. Drag in `.json` files or a `.zip` archive to install a workflow together with its custom nodes and models.
 - **Updates** — update ComfyUI (with or without dependencies) and all custom nodes in one click; enable or disable nodes without deleting them.
-- **Install nodes** — paste one or more repository links (GitHub, GitLab, a branch, or the short `author/repo` form); the node is cloned and its dependencies installed.
+- **Install nodes** — paste one or more repository links (GitHub, GitLab, a branch, or the short `author/repo` form); the node is cloned and its dependencies installed, with live progress, speed and **Reconnect** / **Skip step** buttons when a download hangs.
 - **Model downloads** — paste a Hugging Face or Civitai link, pick files and destination folders, and see free disk space before you start. Downloads can be paused and resumed, even after restarting the launcher.
   - Files download straight into the chosen folder over up to 16 parallel connections, with no extra tools needed. Hugging Face files are verified with SHA-256.
   - Optionally, Hugging Face can use the official `hf download` with Xet instead.
   - Destination roots can come from your `extra_model_paths.yaml`.
+- **Platform (experimental)** — switch the portable build between NVIDIA (CUDA) and AMD (ROCm) from the Launch tab. The second `python_embeded` environment is taken from the official ComfyUI archive and kept side by side; models, custom nodes, workflows, input and output are not touched, and a failed switch rolls back. Windows only; not yet tested on a real Radeon.
 - **Backups** — restore points for the build: ComfyUI code, custom nodes (with or without git), Python packages in `python_embeded` and settings. Each file is stored once and compressed, so only the first point is a full copy, and it takes noticeably less space than the build itself. Before creating a point you see its approximate size and whether the disk has room. Points can be compared (ComfyUI version, node commits, package versions) and restored in part or in full; old points are removed automatically. Optionally, a point is created before every ComfyUI update. Models, input and output are not included.
 - **Model paths** — connect models from other builds and folders without copying: a visual editor for `extra_model_paths.yaml` (any model type — checkpoints, loras, LLM, TTS, sam3 or folders created by nodes), plus folder links for nodes that only look in `ComfyUI\models`. Shows where ComfyUI will look for each model type and keeps hand-written sections and a `.bak` copy.
 - **Transfer** — move settings, workflows, models, Input / Output, `extra_model_paths.yaml` and custom nodes from another ComfyUI build. Missing nodes are detected automatically. Models can be copied, moved, hard-linked instantly, or linked without copying.
@@ -65,13 +66,13 @@ The launcher is distributed as source code: you build `ND_Launcher.exe` on your 
 
 ### Run without an exe
 
-Copy `nd_launcher.py`, `nd_i18n.py`, `nd_browser.py`, `nd_extension_install.py`, `nd_backup.py`, `nd_modelpaths.py`, `nd_icon.ico`, the `brand\` and `chrome_extension\` folders and `ND_Launcher.bat` into the root of your build and run `ND_Launcher.bat`. On first start it installs PySide6 into `python_embeded`.
+Copy `nd_launcher.py`, `nd_i18n.py`, `nd_browser.py`, `nd_extension_install.py`, `nd_backup.py`, `nd_backend.py`, `nd_backend_install.py`, `nd_modelpaths.py`, `nd_wfinstall.py`, `nd_icon.ico`, the `brand\` and `chrome_extension\` folders and `ND_Launcher.bat` into the root of your build and run `ND_Launcher.bat`. On first start it installs PySide6 into `python_embeded`.
 
 **Requirements:** Windows 10 / 11 (64-bit) and any portable ComfyUI build with `python_embeded`. Optional: [Git for Windows](https://git-scm.com) for updating custom nodes, an NVIDIA GPU for the GPU monitor.
 
 ## Good to know
 
-- **Launch flags.** `--enable-manager`, `--enable-manager-legacy-ui` and `--max-upload-size 999` are on by default and can be turned off on the Launch tab. `--enable-manager` needs a recent ComfyUI with the pip version of ComfyUI-Manager: turn it off for older builds.
+- **Launch flags.** `--enable-manager` and `--max-upload-size 999` are on by default, `--enable-manager-legacy-ui` (the classic Manager window) is off; all can be changed on the Launch tab. `--enable-manager` needs a recent ComfyUI with the pip version of ComfyUI-Manager: if it is missing, an **Install** button appears next to the option; for older builds turn the option off.
 - **Settings** are stored in `nd_launcher.json` next to the launcher.
 - **API tokens** are encrypted with Windows DPAPI: only your Windows user on this PC can decrypt them.
 - **Network access.** The launcher sends no telemetry. It goes online only for features you use: downloads, node installs and updates.
