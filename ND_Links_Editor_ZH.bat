@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul
 cd /d "%~dp0"
 
@@ -15,4 +15,4 @@ if errorlevel 1 (
         exit /b 1
     )
 )
-%SYS_PY% nd_launcher.py --edit-links
+%SYS_PY% nd_launcher.py --edit-links --lang zh

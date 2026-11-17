@@ -9070,6 +9070,35 @@ class MainWindow(QMainWindow):
 
 # ───────────────────── редактор ссылок (только для автора сборки) ─────────────
 
+# Links Editor translations are independent of the main window's saved language.
+_EDITOR_TRANSLATIONS = {
+    "en": {
+        "ссылки для сборки": "build links",
+        "Ссылки, которые будут зашиты в ND_Launcher.exe": "Links to embed in ND_Launcher.exe",
+        "Пользователи сборки их не увидят в настройках и не смогут изменить. Иконки скачиваются с сайтов автоматически при сохранении; можно выбрать и свою картинку.": "Users of the build cannot see or change these links in Settings. Website icons are downloaded automatically when saving; you can also select a custom image.",
+        "Название": "Name", "Иконка": "Icon", "+  Добавить": "+  Add", "−  Удалить": "−  Remove",
+        "Своя иконка…": "Custom icon…", "Перекачать иконки": "Redownload icons", "Сохранить": "Save",
+        "Выбери строку со ссылкой.": "Select a link row first.", "Картинки (*.png *.ico *.jpg *.jpeg *.webp *.svg)": "Images (*.png *.ico *.jpg *.jpeg *.webp *.svg)",
+        "Скачиваю иконки…": "Downloading icons…", "Сохранено ссылок: {0}": "Saved links: {0}",
+        "не удалось скачать иконку для": "Could not download an icon for",
+    },
+    "zh": {
+        "ссылки для сборки": "构建链接",
+        "Ссылки, которые будут зашиты в ND_Launcher.exe": "将嵌入 ND_Launcher.exe 的链接",
+        "Пользователи сборки их не увидят в настройках и не смогут изменить. Иконки скачиваются с сайтов автоматически при сохранении; можно выбрать и свою картинку.": "发行版本的用户无法在设置中查看或修改这些链接。保存时会自动下载网站图标，也可以选择自定义图片。",
+        "Название": "名称", "Иконка": "图标", "+  Добавить": "+  添加", "−  Удалить": "−  删除",
+        "Своя иконка…": "自定义图标…", "Перекачать иконки": "重新下载图标", "Сохранить": "保存",
+        "Выбери строку со ссылкой.": "请先选择一条链接。", "Картинки (*.png *.ico *.jpg *.jpeg *.webp *.svg)": "图片 (*.png *.ico *.jpg *.jpeg *.webp *.svg)",
+        "Скачиваю иконки…": "正在下载图标…", "Сохранено ссылок: {0}": "已保存链接：{0}",
+        "не удалось скачать иконку для": "无法下载图标：",
+    },
+}
+
+
+def editor_tr(source):
+    return _EDITOR_TRANSLATIONS.get(get_lang(), {}).get(source, source)
+
+
 class LinksEditor(QDialog):
     """Открывается через ND_Links_Editor.bat (nd_launcher.py --edit-links).
     Правит brand/links.json рядом с исходником; build_exe.bat зашивает brand внутрь .exe."""
@@ -9077,19 +9106,19 @@ class LinksEditor(QDialog):
     def __init__(self, bdir: Path):
         super().__init__()
         self.bdir = Path(bdir)
-        self.setWindowTitle(f"{APP_TITLE} · ссылки для сборки")
+        self.setWindowTitle(f"{APP_TITLE} · {editor_tr('ссылки для сборки')}")
         self.setWindowIcon(make_icon())
         self.resize(900, 560)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 20, 22, 20)
         lay.setSpacing(12)
-        t = QLabel("Ссылки, которые будут зашиты в ND_Launcher.exe")
+        t = QLabel(editor_tr("Ссылки, которые будут зашиты в ND_Launcher.exe"))
         t.setObjectName("PageTitle")
         lay.addWidget(t)
-        lay.addWidget(muted("Пользователи сборки их не увидят в настройках и не смогут изменить. "
-                            "Иконки скачиваются с сайтов автоматически при сохранении; можно выбрать и свою картинку."))
+        lay.addWidget(muted(editor_tr("Пользователи сборки их не увидят в настройках и не смогут изменить. "
+                            "Иконки скачиваются с сайтов автоматически при сохранении; можно выбрать и свою картинку.")))
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Название", "URL", "Иконка"])
+        self.table.setHorizontalHeaderLabels([editor_tr("Название"), "URL", editor_tr("Иконка")])
         self.table.verticalHeader().hide()
         self.table.setIconSize(QSize(20, 20))
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -9100,14 +9129,14 @@ class LinksEditor(QDialog):
         hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         lay.addWidget(self.table, 1)
         row = QHBoxLayout()
-        row.addWidget(button("+  Добавить", lambda: self._add_row({})))
-        row.addWidget(button("−  Удалить", self._remove, "Danger"))
+        row.addWidget(button(editor_tr("+  Добавить"), lambda: self._add_row({})))
+        row.addWidget(button(editor_tr("−  Удалить"), self._remove, "Danger"))
         row.addWidget(button("↑", lambda: self._move(-1)))
         row.addWidget(button("↓", lambda: self._move(1)))
-        row.addWidget(button("Своя иконка…", self._pick_icon))
-        row.addWidget(button("Перекачать иконки", lambda: self._save(force_icons=True, close=False)))
+        row.addWidget(button(editor_tr("Своя иконка…"), self._pick_icon))
+        row.addWidget(button(editor_tr("Перекачать иконки"), lambda: self._save(force_icons=True, close=False)))
         row.addStretch()
-        row.addWidget(button("Сохранить", lambda: self._save(close=True), "Accent"))
+        row.addWidget(button(editor_tr("Сохранить"), lambda: self._save(close=True), "Accent"))
         lay.addLayout(row)
         self.status = muted("", False)
         lay.addWidget(self.status)
@@ -9165,9 +9194,9 @@ class LinksEditor(QDialog):
     def _pick_icon(self):
         r = self.table.currentRow()
         if r < 0:
-            QMessageBox.information(self, APP_TITLE, "Выбери строку со ссылкой.")
+            QMessageBox.information(self, APP_TITLE, editor_tr("Выбери строку со ссылкой."))
             return
-        f, _ = QFileDialog.getOpenFileName(self, "Иконка", "", "Картинки (*.png *.ico *.jpg *.jpeg *.webp *.svg)")
+        f, _ = QFileDialog.getOpenFileName(self, editor_tr("Иконка"), "", editor_tr("Картинки (*.png *.ico *.jpg *.jpeg *.webp *.svg)"))
         if not f:
             return
         url = self.table.item(r, 1).text().strip()
@@ -9179,7 +9208,7 @@ class LinksEditor(QDialog):
 
     def _save(self, close=True, force_icons=False):
         links = self._rows()
-        self.status.setText("Скачиваю иконки…")
+        self.status.setText(editor_tr("Скачиваю иконки…"))
         QApplication.processEvents()
         msgs = []
         fetch_link_icons(self.bdir, links, force=force_icons, log=msgs.append)
@@ -9189,7 +9218,9 @@ class LinksEditor(QDialog):
         for l in links:
             self._add_row(l)
         fails = [m for m in msgs if m.startswith("не удалось")]
-        self.status.setText(f"Сохранено ссылок: {len(links)}" + (f" · {'; '.join(fails)}" if fails else ""))
+        self.status.setText(editor_tr("Сохранено ссылок: {0}").format(len(links)) +
+                            (" · " + "; ".join(editor_tr("не удалось скачать иконку для") +
+                                               m[len("не удалось скачать иконку для"):] for m in fails) if fails else ""))
         if close and not fails:
             self.accept()
 
@@ -9213,6 +9244,12 @@ def main():
     app.setStyleSheet(build_qss())
     app.setWindowIcon(make_icon())
     if "--edit-links" in sys.argv:
+        # Optional editor-only locale, e.g. --edit-links --lang en.
+        if "--lang" in sys.argv:
+            ix = sys.argv.index("--lang")
+            if ix + 1 < len(sys.argv) and sys.argv[ix + 1] in ("ru", "en", "zh"):
+                set_lang(sys.argv[ix + 1])
+        install_qt_translator(get_lang())
         if getattr(sys, "frozen", False):
             QMessageBox.information(None, APP_TITLE, tr('Ссылки зашиты в эту сборку и не редактируются.'))
             return
