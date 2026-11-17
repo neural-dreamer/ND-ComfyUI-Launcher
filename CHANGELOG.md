@@ -11,7 +11,6 @@ Hotfix: Corrected the launcher version and fixed false update notifications.
 
 ### Fixed
 - **Launcher version:** Fixed version 1.3.2 being incorrectly identified as 1.3.1, causing false update notifications.
-- **EXE version metadata:** Updated the internal version to 1.3.3 so the application interface, executable metadata, and update checker use the correct version.
 
 ## [1.3.2] — 2026-11-17
 
