@@ -10,7 +10,7 @@ Each version's section is used as the notes of its GitHub release.
 Hotfix: Corrected the launcher version and fixed false update notifications.
 
 ### Fixed
-- **Launcher version:** Fixed version 1.3.2 being incorrectly identified as 1.3.1, causing false update notifications.
+- **Launcher version:** Fixed launcher version being incorrectly identified, causing false update notifications.
 
 ## [1.3.2] — 2026-11-17
 
