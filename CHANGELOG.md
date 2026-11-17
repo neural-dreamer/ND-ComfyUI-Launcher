@@ -5,6 +5,14 @@ Each version's section is used as the notes of its GitHub release.
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-11-17
+
+Hotfix: Corrected the launcher version and fixed false update notifications.
+
+### Fixed
+- **Launcher version:** Fixed version 1.3.2 being incorrectly identified as 1.3.1, causing false update notifications.
+- **EXE version metadata:** Updated the internal version to 1.3.3 so the application interface, executable metadata, and update checker use the correct version.
+
 ## [1.3.2] — 2026-11-17
 
 More reliable model downloads with automatic retries and resume support, better default node versions when installing workflows, and English/Chinese build utilities.
