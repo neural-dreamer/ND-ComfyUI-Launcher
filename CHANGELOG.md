@@ -5,11 +5,23 @@ Each version's section is used as the notes of its GitHub release.
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-11-17
+
+More reliable model downloads with automatic retries and resume support, better default node versions when installing workflows, and English/Chinese build utilities.
+
+### Added
+- **Localized Windows scripts:** English and Simplified Chinese versions of the EXE build script (`build_exe_EN.bat`, `build_exe_ZH.bat`) and the links editor launcher (`ND_Links_Editor_EN.bat`, `ND_Links_Editor_ZH.bat`). The original Russian scripts are unchanged.
+
 ### Changed
-- **Install workflow:** missing custom nodes are now installed at the latest version by default. The version recorded in the workflow is still one click away (per node or with **From workflow** for all checked nodes).
+- **Install workflow:** missing custom nodes are now installed at the latest version by default. The version recorded in the workflow remains available per node or via **From workflow** for all checked nodes.
 
 ### Fixed
-- **Model downloads (Civitai):** when Civitai limited downloads (HTTP 429) or answered with a temporary server error, the download stopped at once and every retry failed the same way. The launcher now waits (using the server's Retry-After) and tries again, shows a clear message if the limit persists, and keeps the downloaded part so the next attempt resumes instead of starting over. The console now shows which server returned the error. Downloads sent from the browser whose link has expired get a clear hint to add a Civitai API token or restart the download in the browser.
+- **Model downloader:** retries HTTP 429, HTTP 5xx and network failures with backoff, respecting `Retry-After` where provided. Persistent rate limits return exit code `11`, and error messages identify the affected host.
+- **Download resume:** preserves partial downloads after access, server, network or rate-limit errors so the next attempt can resume instead of restarting.
+- **Expired browser links:** displays a clear message when an intercepted browser link has expired and no valid Civitai API token is configured.
+
+### Tests
+- Added rate-limit retry and persistent HTTP 429 coverage in `test_browser_downloader.py`.
 
 ## [1.3.1] — 2026-11-10
 
