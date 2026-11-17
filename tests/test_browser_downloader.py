@@ -21,6 +21,13 @@ class BrowserDownloaderTests(unittest.TestCase):
             def do_GET(self):
                 owner.seen.append((self.path,self.headers.get('Authorization')))
                 if self.path=='/expired':self.send_error(403);return
+                if self.path=='/busy':
+                    owner.busy=getattr(owner,'busy',0)+1
+                    if owner.busy<=2:
+                        self.send_response(429);self.send_header('Retry-After','1');self.send_header('Content-Length','0');self.end_headers();return
+                    self.send_response(302);self.send_header('Location',f'http://localhost:{self.server.server_address[1]}/file');self.end_headers();return
+                if self.path=='/limited':
+                    self.send_response(429);self.send_header('Retry-After','1');self.send_header('Content-Length','0');self.end_headers();return
                 if self.path=='/api':
                     self.send_response(302)
                     self.send_header('Location',f'http://localhost:{self.server.server_address[1]}/file')
@@ -74,6 +81,19 @@ class BrowserDownloaderTests(unittest.TestCase):
         self.assertEqual(self.run_download('/file').returncode,10)
         self.assertEqual(self.dest.read_bytes(),b'existing')
         self.assertFalse(self.seen)
+
+    def test_rate_limit_is_retried(self):
+        result=self.run_download('/busy')
+        self.assertEqual(result.returncode,0,result.stdout.decode()+result.stderr.decode())
+        self.assertEqual(self.dest.read_bytes(),self.data)
+        self.assertIn(b'HTTP 429',result.stdout)
+
+    def test_persistent_rate_limit_has_own_code(self):
+        result=subprocess.run([sys.executable,'-c',SCRIPT.replace('min(120, ra or','min(1, ra or'),self.base+'/limited',str(self.dest),'2',''],
+                              env=dict(os.environ,ND_DL_NO_OVERWRITE='1'),capture_output=True,timeout=30)
+        self.assertEqual(result.returncode,11,result.stdout.decode())
+        self.assertIn(b'HTTP 429 from 127.0.0.1',result.stdout)
+        self.assertFalse(self.dest.exists())
 
     def test_login_page_not_saved_as_model(self):
         self.assertEqual(self.run_download('/html').returncode,3)

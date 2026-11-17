@@ -3,6 +3,14 @@
 All notable changes to ND · ComfyUI Launcher. Versions follow [Semantic Versioning](https://semver.org).
 Each version's section is used as the notes of its GitHub release.
 
+## [Unreleased]
+
+### Changed
+- **Install workflow:** missing custom nodes are now installed at the latest version by default. The version recorded in the workflow is still one click away (per node or with **From workflow** for all checked nodes).
+
+### Fixed
+- **Model downloads (Civitai):** when Civitai limited downloads (HTTP 429) or answered with a temporary server error, the download stopped at once and every retry failed the same way. The launcher now waits (using the server's Retry-After) and tries again, shows a clear message if the limit persists, and keeps the downloaded part so the next attempt resumes instead of starting over. The console now shows which server returned the error. Downloads sent from the browser whose link has expired get a clear hint to add a Civitai API token or restart the download in the browser.
+
 ## [1.3.1] — 2026-11-10
 
 Fix: PyTorch could lose CUDA after “ComfyUI + dependencies”.

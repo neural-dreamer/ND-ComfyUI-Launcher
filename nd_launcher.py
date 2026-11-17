@@ -774,7 +774,8 @@ sys.exit(main())
 """
 
 # Многопоточная загрузка (Civitai): одна подписанная ссылка на хранилище, файл качается кусками в N соединений.
-# Коды выхода: 3 — нет доступа (нужен токен), 4 — не найдено, 5 — ошибка HTTP, 6 — сеть, 7 — размер не совпал.
+# Коды выхода: 3 — нет доступа (нужен токен), 4 — не найдено, 5 — ошибка HTTP, 6 — сеть, 7 — размер не совпал,
+# 11 — сервер ограничил частоту запросов (HTTP 429) и не пустил даже после ожидания.
 FAST_DL_SCRIPT = r"""
 import os, sys, json, time, hashlib, threading, urllib.request, urllib.error, urllib.parse
 url, dest, conns = sys.argv[1], sys.argv[2], max(1, min(32, int(sys.argv[3])))
@@ -807,6 +808,32 @@ class Fatal(Exception):
     def __init__(self, code, msg):
         Exception.__init__(self, msg)
         self.code = code
+TRANSIENT = (429, 500, 502, 503, 504)
+def host_of(u):
+    return urllib.parse.urlsplit(u).hostname or "?"
+def retry_wait(e, attempt):
+    # Retry-After от сервера (Civitai при лимите загрузок), иначе 5, 10, 20, 40 с.
+    try:
+        ra = int(e.headers.get("Retry-After", "")) if getattr(e, "headers", None) else 0
+    except ValueError:
+        ra = 0
+    return max(1, min(120, ra or 5 * 2 ** attempt))
+def open_hop(cur, auth):
+    # Один шаг цепочки ссылок: временные ошибки (429, 5xx, обрыв сети) повторяем с паузой, остальные отдаём наверх.
+    for attempt in range(5):
+        try:
+            return opener.open(req(cur, auth, (0, 0)), timeout=60)
+        except urllib.error.HTTPError as e:
+            if e.code not in TRANSIENT or attempt == 4:
+                raise
+            wait = retry_wait(e, attempt)
+            print("HTTP %d from %s, retrying in %d s" % (e.code, host_of(cur), wait), flush=True)
+        except (urllib.error.URLError, OSError) as e:
+            if attempt == 4:
+                raise
+            wait = 5 * 2 ** attempt
+            print("network error at %s (%s), retrying in %d s" % (host_of(cur), e, wait), flush=True)
+        time.sleep(wait)
 def resolve():
     # Редиректы проходим сами: после перехода на хранилище токен не отправляем, ссылка там уже подписана.
     cur, auth = url, token
@@ -814,7 +841,7 @@ def resolve():
     used_fallback = False
     for _ in range(10):
         try:
-            resp = opener.open(req(cur, auth, (0, 0)), timeout=60)
+            resp = open_hop(cur, auth)
             return cur, auth, resp
         except urllib.error.HTTPError as e:
             if e.code in (401, 403) and fallback_url and not used_fallback:
@@ -825,7 +852,7 @@ def resolve():
                 continue
             loc = e.headers.get("Location") if e.code in (301, 302, 303, 307, 308) else None
             if not loc:
-                raise Fatal(3 if e.code in (401, 403) else 4 if e.code == 404 else 5, "HTTP %d" % e.code)
+                raise Fatal(3 if e.code in (401, 403) else 4 if e.code == 404 else 11 if e.code == 429 else 5, "HTTP %d from %s" % (e.code, host_of(cur)))
             previous = cur
             cur = urllib.parse.urljoin(cur, loc)
             if urllib.parse.urlsplit(cur).netloc != urllib.parse.urlsplit(previous).netloc:
@@ -985,7 +1012,10 @@ if ranged:
                         with lock:
                             errors.append(e)
                         return
-                    time.sleep(min(2 * tries, 10))
+                    if isinstance(e, urllib.error.HTTPError) and e.code in TRANSIENT:
+                        time.sleep(retry_wait(e, min(tries, 3)))
+                    else:
+                        time.sleep(min(2 * tries, 10))
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(conns)]
     for t in threads:
         t.start()
@@ -1011,7 +1041,7 @@ time.sleep(0.05)
 sys.stdout.write("\n")
 if errors:
     print("download failed:", errors[0], flush=True)
-    sys.exit(6)
+    sys.exit(11 if isinstance(errors[0], urllib.error.HTTPError) and errors[0].code == 429 else 6)
 if size and os.path.getsize(tmp) != size:
     print("size mismatch", flush=True)
     sys.exit(7)
@@ -3279,6 +3309,7 @@ class WorkflowInstallDialog(QDialog):
             if len(vs) > 1:
                 w["ver_cb"].setItemData(0, tr("В воркфлоу записано несколько версий этой ноды: {0}. Будет выбрана самая новая из них.", ", ".join(str(v)[:10] for v in vs)), Qt.ToolTipRole)
                 w["ver_cb"].setToolTip(w["ver_cb"].itemData(0, Qt.ToolTipRole) + "\n\n" + w["ver_cb"].toolTip())
+            w["ver_cb"].setCurrentIndex(1)   # по умолчанию ставим последнюю версию; «из воркфлоу» — по выбору
             w["ver_cb"].currentIndexChanged.connect(self._refresh_ver_note)
             self.tree_nodes.setItemWidget(item, 2, w["ver_cb"])
         elif status != "installed":
@@ -3300,7 +3331,7 @@ class WorkflowInstallDialog(QDialog):
         if not hasattr(self, "lbl_ver_note"):
             return
         latest = any(w["ver_cb"] is not None and w["ver_cb"].currentData() == "latest" for _i, _p, w in self.pkg_rows)
-        self.lbl_ver_note.setText(f'<span style="color:{C["YELLOW"]}">⚠ ' + html.escape(tr("Для нод с пометкой «последняя» версия отличается от записанной в воркфлоу: нода могла измениться, воркфлоу на ней не проверялся.")) + "</span>" if latest else "")
+        self.lbl_ver_note.setText(f'<span style="color:{C["YELLOW"]}">⚠ ' + html.escape(tr("Для нод с пометкой «последняя» версия может отличаться от записанной в воркфлоу. Если воркфлоу не заработает, выбери для них «из воркфлоу».")) + "</span>" if latest else "")
 
     def _build_models(self):
         self.model_rows = []
@@ -5421,7 +5452,7 @@ class MainWindow(QMainWindow):
 
     DL_ERRORS = {10: "Файл назначения уже существует; перезапись отменена.", 3: "Нет доступа: нужен API-токен Civitai или модель требует входа в аккаунт.",
                  4: "Файл не найден на сервере.", 5: "Ошибка сервера.", 6: "Ошибка сети — загрузка прервана.",
-                 7: "Файл скачался не полностью.", 8: "Контрольная сумма не совпала: файл повреждён и удалён, попробуй скачать ещё раз.", 9: "Не установлен huggingface_hub.", -1: "Не удалось запустить загрузку."}
+                 7: "Файл скачался не полностью.", 11: "Сервер временно ограничил загрузки (слишком много запросов). Подожди несколько минут и запусти загрузку снова.", 8: "Контрольная сумма не совпала: файл повреждён и удалён, попробуй скачать ещё раз.", 9: "Не установлен huggingface_hub.", -1: "Не удалось запустить загрузку."}
 
     def _dl_finish(self, q):
         self._dl_poll.stop()
@@ -5457,7 +5488,10 @@ class MainWindow(QMainWindow):
                 q["error"] = tr("Нет доступа к файлу на Hugging Face: укажи токен, а для закрытых (gated) моделей прими условия на странице модели.")
             if q.get("via") == "cli" and code == 1:
                 q["error"] = tr("Hugging Face вернул ошибку — проверь токен и доступ к модели (подробности в консоли).")
-            if code == 6 and Path(str(q["dest"]) + ".ndpart.json").exists():
+            if code == 3 and q["source"] == "browser":
+                q["error"] = tr("Нет доступа: ссылка из браузера устарела, а API-токен Civitai не указан или не подошёл. Укажи токен на вкладке «Загрузка моделей» или запусти загрузку в браузере заново.")
+            # Скачанное оставляем при любой ошибке связи или доступа: после повтора (или с токеном) загрузка продолжится.
+            if code in (3, 5, 6, 11) and Path(str(q["dest"]) + ".ndpart.json").exists():
                 q["error"] += " " + tr("Скачанное сохранено: нажми «Скачать отмеченные» ещё раз, и загрузка продолжится с того же места.")
                 self.console.system(f"{q['name']}: {q['error']}", error=True)
             else:
